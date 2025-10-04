@@ -35,8 +35,10 @@
 - 批大小：每次请求嵌入的条数，默认 64。
 - 采样上限：每个视频最多处理的弹幕条数，默认 4000。
 - 时间聚合粒度：折线图的时间 bin（秒），默认 30。
-<img width="2794" height="1341" alt="image" src="https://github.com/user-attachments/assets/60bd4952-79a1-45d0-8123-cb45c34e4c4e" />
 注：具体的维度大小要遵循所选模型数，如图所示。
+
+<img width="2794" height="1341" alt="image" src="https://github.com/user-attachments/assets/501394dd-bbac-4dfc-b571-e7d421cfb50f" />
+
 ## 实现要点
 
 - 跨域接口放在 `background.js`：
