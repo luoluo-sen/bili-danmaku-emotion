@@ -24,12 +24,7 @@
    - 获取 `cid` → 拉取弹幕 XML → 远端生成嵌入 → 零样本情绪分类 → 时间聚合 → 绘图。
 4. 首次批量请求会稍慢；可在选项页调整“批大小/采样上限/时间粒度”。
 
-## 打包
 
-将扩展打包为 zip（包含图标）：
-
-```
-zip -r build.zip manifest.json src Stopwords icons
 ```
 
 ## 选项说明
@@ -40,7 +35,8 @@ zip -r build.zip manifest.json src Stopwords icons
 - 批大小：每次请求嵌入的条数，默认 64。
 - 采样上限：每个视频最多处理的弹幕条数，默认 4000。
 - 时间聚合粒度：折线图的时间 bin（秒），默认 30。
-
+<img width="2794" height="1341" alt="image" src="https://github.com/user-attachments/assets/60bd4952-79a1-45d0-8123-cb45c34e4c4e" />
+注：具体的维度大小要遵循所选模型数，如图所示。
 ## 实现要点
 
 - 跨域接口放在 `background.js`：
