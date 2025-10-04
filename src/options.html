@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>B 站弹幕情绪插件 - 设置</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        background: linear-gradient(135deg, #f5f7fa 0%, #f0f3f7 100%);
+        min-height: 100vh;
+        padding: 0;
+        color: #18191c;
+      }
+
+      .container {
+        max-width: 680px;
+        margin: 0 auto;
+        padding: 40px 24px;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 48px;
+      }
+
+      .header-title {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .header-icon {
+        width: 48px;
+        height: 48px;
+        background: linear-gradient(135deg, #FB7299 0%, #00A1D6 100%);
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+      }
+
+      h1 {
+        font-size: 28px;
+        font-weight: 600;
+        color: #18191c;
+      }
+
+      .subtitle {
+        color: #61666d;
+        font-size: 14px;
+        margin-top: 8px;
+      }
+
+      .card {
+        background: #ffffff;
+        border-radius: 16px;
+        padding: 32px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+        margin-bottom: 24px;
+      }
+
+      .section-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #18191c;
+        margin-bottom: 24px;
+        padding-bottom: 12px;
+        border-bottom: 2px solid #f1f2f3;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .section-icon {
+        width: 20px;
+        height: 20px;
+        background: linear-gradient(135deg, #FB7299 0%, #00A1D6 100%);
+        border-radius: 4px;
+        display: inline-block;
+      }
+
+      .form-group {
+        margin-bottom: 24px;
+      }
+
+      .form-group:last-child {
+        margin-bottom: 0;
+      }
+
+      label {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 8px;
+        color: #18191c;
+        font-size: 14px;
+      }
+
+      input, select {
+        width: 100%;
+        padding: 12px 16px;
+        font-size: 14px;
+        font-family: inherit;
+        border: 2px solid #e3e5e7;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #18191c;
+        transition: all 0.2s ease;
+        outline: none;
+      }
+
+      input:focus, select:focus {
+        border-color: #00A1D6;
+        box-shadow: 0 0 0 3px rgba(0, 161, 214, 0.1);
+      }
+
+      input:hover, select:hover {
+        border-color: #c9ccd0;
+      }
+
+      input[type="number"] {
+        appearance: textfield;
+      }
+
+      input[type="number"]::-webkit-outer-spin-button,
+      input[type="number"]::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+
+      select {
+        cursor: pointer;
+        background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2361666d' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 16px center;
+        padding-right: 40px;
+      }
+
+      .hint {
+        color: #61666d;
+        font-size: 12px;
+        margin-top: 6px;
+        line-height: 1.5;
+      }
+
+      .button-group {
+        display: flex;
+        gap: 12px;
+        margin-top: 32px;
+      }
+
+      button {
+        padding: 12px 24px;
+        font-size: 14px;
+        font-weight: 500;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        font-family: inherit;
+      }
+
+      #save {
+        background: #00A1D6;
+        color: #ffffff;
+        flex: 1;
+      }
+
+      #save:hover {
+        background: #0091c2;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0, 161, 214, 0.3);
+      }
+
+      #save:active {
+        transform: translateY(0);
+      }
+
+      #reset {
+        background: #ffffff;
+        color: #61666d;
+        border: 2px solid #e3e5e7;
+      }
+
+      #reset:hover {
+        border-color: #FB7299;
+        color: #FB7299;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        margin-top: 12px;
+        animation: slideIn 0.3s ease;
+      }
+
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(-8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .status.ok {
+        background: #e8f9f0;
+        color: #00a870;
+      }
+
+      .status.ok::before {
+        content: "✓";
+        width: 18px;
+        height: 18px;
+        background: #00a870;
+        color: #ffffff;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+      }
+
+      .status.err {
+        background: #feebee;
+        color: #f45a8d;
+      }
+
+      .status.err::before {
+        content: "!";
+        width: 18px;
+        height: 18px;
+        background: #f45a8d;
+        color: #ffffff;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .footer {
+        text-align: center;
+        margin-top: 40px;
+        color: #9499a0;
+        font-size: 13px;
+      }
+
+      .footer-link {
+        color: #00A1D6;
+        text-decoration: none;
+        transition: color 0.2s ease;
+      }
+
+      .footer-link:hover {
+        color: #FB7299;
+      }
+
+      /* Bilibili themed accent */
+      .bili-accent {
+        background: linear-gradient(135deg, #FB7299 0%, #00A1D6 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      /* Tabs */
+      .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 16px 0 20px;
+      }
+      .tab {
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 2px solid #e3e5e7;
+        background: #fff;
+        color: #18191c;
+        font-weight: 600;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .tab:hover { border-color: #00A1D6; }
+      .tab.active {
+        background: #00A1D6;
+        color: #fff;
+        border-color: #00A1D6;
+      }
+      /* hide cards by tab */
+      .card[data-tab] { display: none; }
+      .card[data-tab].active { display: block; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="header-title">
+          <div class="header-icon">💬</div>
+          <h1>弹幕情绪分析插件</h1>
+        </div>
+        <p class="subtitle">配置 AI 模型参数，分析 B 站弹幕情感趋势</p>
+      </div>
+
+      <div class="tabs" id="tabs">
+        <button class="tab" data-tab="api">API</button>
+        <button class="tab" data-tab="performance">性能</button>
+        <button class="tab" data-tab="classification">分类</button>
+        <button class="tab" data-tab="context">上下文</button>
+        <button class="tab" data-tab="lexicon">分词</button>
+        <button class="tab" data-tab="visual">可视化</button>
+        <button class="tab" data-tab="history">历史</button>
+        <button class="tab" data-tab="backup">备份</button>
+      </div>
+
+      <div class="card" data-tab="api">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          API 配置
+        </div>
+
+        <div class="form-group">
+          <label for="apiKey">SiliconFlow API Key</label>
+          <input id="apiKey" type="password" placeholder="输入您的 API Key" />
+          <div class="hint">🔒 密钥仅保存在本地浏览器，不会上传到任何服务器</div>
+        </div>
+
+        <div class="form-group">
+          <label for="model">Embedding 模型</label>
+          <select id="model">
+            <option value="Qwen/Qwen3-Embedding-8B">Qwen3-Embedding-8B（推荐）</option>
+            <option value="Qwen/Qwen3-Embedding-4B">Qwen3-Embedding-4B</option>
+            <option value="Qwen/Qwen3-Embedding-0.6B">Qwen3-Embedding-0.6B</option>
+            <option value="BAAI/bge-m3">BAAI/bge-m3</option>
+            <option value="BAAI/bge-large-zh-v1.5">BAAI/bge-large-zh-v1.5</option>
+          </select>
+          <div class="hint">💡 不同模型在精度和速度上有所差异</div>
+        </div>
+
+        <div class="form-group">
+          <label for="dimensions">Embedding 维度</label>
+          <input id="dimensions" type="number" value="4096" min="128" max="8192" step="128" />
+          <div class="hint">📊 Qwen3 支持多种维度，默认 4096</div>
+        </div>
+
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input id="useCookies" type="checkbox" checked /> 使用浏览器 Cookie（建议登录 B 站以提升可访问性）
+          </label>
+          <div class="hint">启用后，后台请求会附带 cookies（credentials: include）。</div>
+        </div>
+      </div>
+
+      <div class="card" data-tab="performance">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          性能调优
+        </div>
+
+        <div class="form-group">
+          <label for="batchSize">批处理大小</label>
+          <input id="batchSize" type="number" value="64" min="1" max="256" />
+          <div class="hint">⚡ 每次请求处理的弹幕条数，调大可提速但可能超限</div>
+        </div>
+
+        <div class="form-group">
+          <label for="sampleLimit">采样上限</label>
+          <input id="sampleLimit" type="number" value="4000" min="100" max="10000" />
+          <div class="hint">🎯 每个视频最多分析的弹幕数量</div>
+        </div>
+
+        <div class="form-group">
+          <label for="binSizeSec">时间粒度（秒）</label>
+          <input id="binSizeSec" type="number" value="30" min="5" max="300" />
+          <div class="hint">⏱️ 图表时间轴的聚合粒度，越小越精细</div>
+        </div>
+
+        <div class="form-group">
+          <label for="embedConcurrency">嵌入请求并发</label>
+          <input id="embedConcurrency" type="number" value="12" min="1" max="16" />
+          <div class="hint">🚀 并发批请求数量，配合下方限速以避免触发上限</div>
+        </div>
+
+        <div class="form-group">
+          <label for="embedDelayMs">批间延迟（毫秒）</label>
+          <input id="embedDelayMs" type="number" value="0" min="0" max="1000" />
+          <div class="hint">⏳ 每批请求之间的最小间隔，0 表示不主动等待</div>
+        </div>
+
+        <div class="form-group">
+          <label for="rpmLimit">RPM 限速</label>
+          <input id="rpmLimit" type="number" value="2000" min="10" max="5000" />
+          <div class="hint">每分钟最大请求数软上限（仅本页面策略）</div>
+        </div>
+
+        <div class="form-group">
+          <label for="tpmLimit">TPM 限速</label>
+          <input id="tpmLimit" type="number" value="1000000" min="10000" max="5000000" />
+          <div class="hint">每分钟最大 Token 数软上限（按字符数近似）</div>
+        </div>
+
+        <div class="form-group">
+          <label for="segParallel">弹幕分段抓取并发</label>
+          <input id="segParallel" type="number" value="8" min="1" max="12" />
+          <div class="hint">只影响 seg.so 抓取速度，过大可能容易超时</div>
+        </div>
+      </div>
+
+      <div class="card" data-tab="history">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          历史弹幕
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input id="enableHistory" type="checkbox" checked /> 启用历史弹幕（需要已登录并携带 Cookie）
+          </label>
+          <div class="hint">会对最近若干月份的有弹幕日期逐日抓取并合并，可能较慢。</div>
+        </div>
+        <div class="form-group">
+          <label for="historyMonths">最近月份数</label>
+          <input id="historyMonths" type="number" value="1" min="1" max="6" />
+          <div class="hint">从当前月份往前数，例如 1 表示本月</div>
+        </div>
+        <div class="form-group">
+          <label for="historyDateLimit">每个视频最多日期数</label>
+          <input id="historyDateLimit" type="number" value="30" min="1" max="120" />
+        </div>
+        <div class="form-group">
+          <label for="historyParallel">历史分日抓取并发</label>
+          <input id="historyParallel" type="number" value="3" min="1" max="6" />
+        </div>
+      </div>
+
+      <div class="card" data-tab="classification">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          分类与阈值（进阶）
+        </div>
+
+        <div class="form-group">
+          <label for="classifyTemp">分类温度（softmax τ）</label>
+          <input id="classifyTemp" type="number" value="0.08" min="0.01" max="1" step="0.01" />
+          <div class="hint">控制分布“尖锐度”，越小越偏向Top1，默认 0.08</div>
+        </div>
+
+        <div class="form-group">
+          <label for="classifyMinBest">中性阈值一：最佳相似度下限</label>
+          <input id="classifyMinBest" type="number" value="0.20" min="0" max="1" step="0.01" />
+          <div class="hint">低于此值视为不确定（中性），默认 0.20</div>
+        </div>
+
+        <div class="form-group">
+          <label for="classifyMinMargin">中性阈值二：前二差距下限</label>
+          <input id="classifyMinMargin" type="number" value="0.06" min="0" max="1" step="0.01" />
+          <div class="hint">Top1-Top2 小于此差值视为不确定（中性），默认 0.06</div>
+        </div>
+      </div>
+
+      <div class="card" data-tab="context">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          上下文先验（提高分类精度）
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input id="useSummaryPrior" type="checkbox" checked /> 使用 AI 总结作为先验
+          </label>
+          <div class="hint">将“AI 总结/大纲”的语义作为先验，与弹幕文本分类结果混合，可降低短文本噪声。</div>
+        </div>
+        <div class="form-group">
+          <label for="summaryPriorWeight">先验权重（0~0.8）</label>
+          <input id="summaryPriorWeight" type="number" min="0" max="0.8" step="0.05" value="0.15" />
+          <div class="hint">数值越大，章节先验影响越强；建议 0.1~0.3。</div>
+        </div>
+      </div>
+
+      <div class="card" data-tab="context">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          字幕上下文（增强语义）
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input id="useSubtitleContext" type="checkbox" /> 启用字幕作为上下文
+          </label>
+          <div class="hint">为每条弹幕查找同一时间附近的字幕段，将字幕向量按权重融入弹幕向量后再分类。</div>
+        </div>
+        <div class="form-group">
+          <label for="subtitleWeight">字幕权重（0~0.6）</label>
+          <input id="subtitleWeight" type="number" min="0" max="0.6" step="0.05" value="0.25" />
+        </div>
+        <div class="form-group">
+          <label for="subtitleWindowSec">时间窗口（秒）</label>
+          <input id="subtitleWindowSec" type="number" min="1" max="12" step="1" value="6" />
+          <div class="hint">只在该时间窗内选择最近字幕段参与融合；较大的窗口可能引入偏差。</div>
+        </div>
+      </div>
+
+      <div class="card" data-tab="classification">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          情绪标签（选择参与分析的类别）
+        </div>
+        <div class="form-group">
+          <div style="display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px 16px;align-items:center;">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-label-key="开心" checked /> 开心</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-label-key="感动" checked /> 感动</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-label-key="惊讶" checked /> 惊讶</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-label-key="中性" checked /> 中性</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-label-key="悲伤" checked /> 悲伤</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-label-key="生气" checked /> 生气</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-label-key="厌恶" checked /> 厌恶</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-label-key="紧张" checked /> 紧张</label>
+          </div>
+          <div class="hint">未勾选的类别将不参与零样本分类与可视化。</div>
+        </div>
+      </div>
+
+      <div class="card" data-tab="lexicon">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          分词与词表
+        </div>
+
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input id="enableStopwords" type="checkbox" checked /> 启用停用词过滤
+          </label>
+          <div class="hint">内置停用词来自本项目 Stopwords/ 目录（已打包至扩展）。</div>
+        </div>
+
+        <div class="form-group">
+          <label for="stopwordsBuiltIn">内置停用词表</label>
+          <select id="stopwordsBuiltIn">
+            <option value="cn">中文汇总（stopwords_cn.txt）</option>
+            <option value="hit">哈工大（stopwords_hit.txt）</option>
+            <option value="baidu">百度（stopwords_baidu.txt）</option>
+            <option value="scu">四川大学（stopwords_scu.txt）</option>
+            <option value="full">中英汇总（stopwords_full.txt）</option>
+            <option value="english">英文常用（stopwords_english.txt）</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="customStopwords">自定义停用词（每行一个）</label>
+          <textarea id="customStopwords" rows="6" style="width:100%" placeholder="例如：\n比如\n就是\n然后"></textarea>
+          <div class="hint">也可从文件导入：<input id="swFile" type="file" accept=".txt" /></div>
+        </div>
+
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input id="enableWhitelist" type="checkbox" /> 启用“专业术语表”（命中后不切分并保留）
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label for="customWhitelist">专业术语表（每行一个）</label>
+          <textarea id="customWhitelist" rows="6" style="width:100%" placeholder="例如：\n隐马尔可夫\n卷积神经网络\n条件随机场"></textarea>
+          <div class="hint">也可从文件导入：<input id="wlFile" type="file" accept=".txt" /></div>
+        </div>
+      </div>
+
+      <div class="card" data-tab="visual">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          关键词（条形图）
+        </div>
+        <div class="form-group">
+          <label for="wordTopN">关键词 Top N</label>
+          <input id="wordTopN" type="number" value="30" min="10" max="120" />
+          <div class="hint">用于关键词条形图的最大词数</div>
+        </div>
+      </div>
+
+      <div class="button-group">
+        <button id="save">保存设置</button>
+        <button id="reset">恢复默认</button>
+      </div>
+
+      <div class="card" data-tab="backup">
+        <div class="section-title">
+          <span class="section-icon"></span>
+          配置备份
+        </div>
+        <div class="form-group">
+          <button id="exportConfig">导出配置</button>
+          <input id="importConfig" type="file" accept="application/json" style="margin-left:12px" />
+          <div class="hint">导出/导入所有设置（包含 API Key 与进阶参数）。</div>
+        </div>
+      </div>
+
+      <div id="status-container"></div>
+
+      <div class="footer">
+        基于 <span class="bili-accent">Qwen Embedding</span> 的零样本情绪分类 ·
+        <a href="https://github.com" class="footer-link">GitHub</a>
+      </div>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -1,0 +1,36 @@
+# Claude Code instructions
+CLAUDE.md
+AGENTS.md
+
+# Debug files
+debug-chart.html
+
+# Stopwords folder (using stopwords_full.txt instead)
+Stopwords/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+build.zip
+*.crx
+*.pem
+
+# Node modules (if added later)
+node_modules/
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log

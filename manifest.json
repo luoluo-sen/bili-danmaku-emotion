@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "Bilibili 弹幕情绪时间序列（Qwen Embedding）",
+  "version": "0.1.0",
+  "description": "抓取 B 站弹幕，使用 SiliconFlow Qwen3 Embedding 做零样本情绪分类并按时间段可视化。",
+  "icons": {
+    "16": "icons/image.png",
+    "32": "icons/image.png",
+    "48": "icons/image.png",
+    "128": "icons/image.png"
+  },
+  "action": {
+    "default_title": "弹幕情绪分析",
+    "default_icon": {
+      "16": "icons/image.png",
+      "32": "icons/image.png",
+      "48": "icons/image.png",
+      "128": "icons/image.png"
+    }
+  },
+  "permissions": [
+    "storage",
+    "scripting",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://api.bilibili.com/*",
+    "https://*.bilibili.com/*",
+    "https://api.siliconflow.cn/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.bilibili.com/video/*"
+      ],
+      "js": [
+        "src/vendor/echarts.min.js",
+        "src/utils.js",
+        "src/exporter.js",
+        "src/chart-manager.js",
+        "src/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "src/options.html",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/injected.js",
+        "stopwords_full.txt",
+        "src/vendor/echarts.min.js"
+      ],
+      "matches": [
+        "https://www.bilibili.com/*"
+      ]
+    }
+  ]
+}
