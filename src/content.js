@@ -8,22 +8,74 @@
   // Initialize chart manager
   let chartManager = null;
 
-  // 默认标签原型定义
+  // ---------- Analysis worker ----------
+  let analysisWorker = null;
+  let workerSeq = 0;
+  const workerPending = new Map();
+
+  function getAnalysisWorker() {
+    if (analysisWorker || typeof Worker === 'undefined') return analysisWorker;
+    try {
+      analysisWorker = new Worker(chrome.runtime.getURL('src/analysis-worker.js'));
+      analysisWorker.onmessage = (e) => {
+        const d = e.data || {};
+        if (!d || !d.id) return;
+        const p = workerPending.get(d.id);
+        if (!p) return;
+        workerPending.delete(d.id);
+        p.resolve(d);
+      };
+      analysisWorker.onerror = (err) => {
+        console.warn('[WIS] analysis worker error', err);
+      };
+    } catch (e) {
+      console.warn('[WIS] Worker init failed:', e);
+      analysisWorker = null;
+    }
+    return analysisWorker;
+  }
+
+  function workerCall(msg, timeoutMs = 60000) {
+    const w = getAnalysisWorker();
+    if (!w) return Promise.reject(new Error('worker unavailable'));
+    const id = ++workerSeq;
+    msg.id = id;
+    return new Promise((resolve, reject) => {
+      workerPending.set(id, { resolve, reject });
+      w.postMessage(msg);
+      setTimeout(() => {
+        if (workerPending.has(id)) {
+          workerPending.delete(id);
+          reject(new Error('worker timeout'));
+        }
+      }, timeoutMs);
+    });
+  }
+
+  // 默认标签原型定义（多原型：每类 3 条，兼顾稳健与性能）
+  // - prompts[0] 为“描述句”，prompts[1..] 为常见口语/短句原型
   const DEFAULT_LABELS = [
-    { key: '开心',  prompt: '这条弹幕表达了开心、快乐、愉快的情绪。', polarity: 1.0,  valence: 0.9,  arousal: 0.6 },
-    { key: '感动',  prompt: '这条弹幕表达了感动、温暖、被触动的情绪。', polarity: 1.0,  valence: 0.8,  arousal: 0.4 },
-    { key: '惊讶',  prompt: '这条弹幕表达了惊讶、意外、震惊的情绪。', polarity: 0.0,  valence: 0.0,  arousal: 0.8 },
-    { key: '中性',  prompt: '这条弹幕表达的是中性、客观、没有明显情绪。', polarity: 0.0,  valence: 0.0, arousal: 0.0 },
-    { key: '悲伤',  prompt: '这条弹幕表达了悲伤、难过、失落的情绪。', polarity: -1.0, valence: -0.9, arousal: -0.5 },
-    { key: '生气',  prompt: '这条弹幕表达了生气、愤怒、不满的情绪。', polarity: -1.0, valence: -0.8, arousal: 0.8 },
-    { key: '厌恶',  prompt: '这条弹幕表达了厌恶、反感、讨厌的情绪。', polarity: -0.8, valence: -0.7, arousal: 0.6 },
-    { key: '紧张',  prompt: '这条弹幕表达了紧张、担忧、焦虑的情绪。', polarity: -0.3, valence: -0.5, arousal: 0.7 }
+    { key: '开心', prompts: ['这条弹幕表达了开心、快乐、愉快的情绪。', '哈哈', '好耶'], polarity: 1.0,  valence: 0.9,  arousal: 0.6 },
+    { key: '感动', prompts: ['这条弹幕表达了感动、温暖、被触动的情绪。', '泪目', '感动'], polarity: 1.0,  valence: 0.8,  arousal: 0.4 },
+    { key: '惊讶', prompts: ['这条弹幕表达了惊讶、意外、震惊的情绪。', '？？？', '卧槽'], polarity: 0.0,  valence: 0.0,  arousal: 0.8 },
+    { key: '中性', prompts: ['这条弹幕表达的是中性、客观、没有明显情绪。', '来了', '路过'], polarity: 0.0,  valence: 0.0, arousal: 0.0 },
+    { key: '悲伤', prompts: ['这条弹幕表达了悲伤、难过、失落的情绪。', '哭', '难受'], polarity: -1.0, valence: -0.9, arousal: -0.5 },
+    { key: '生气', prompts: ['这条弹幕表达了生气、愤怒、不满的情绪。', '气死', '生气'], polarity: -1.0, valence: -0.8, arousal: 0.8 },
+    { key: '厌恶', prompts: ['这条弹幕表达了厌恶、反感、讨厌的情绪。', '恶心', '吐了'], polarity: -0.8, valence: -0.7, arousal: 0.6 },
+    { key: '紧张', prompts: ['这条弹幕表达了紧张、担忧、焦虑的情绪。', '吓死', '好怕'], polarity: -0.3, valence: -0.5, arousal: 0.7 }
   ];
 
   const state = {
     cfg: null,
     labels: DEFAULT_LABELS.slice(),
-    labelEmbeds: null
+    // labelProtoEmbeds: 所有原型的向量（扁平数组，按 labels 顺序拼接）
+    // labelProtoIndex: 每个 label 的原型切片位置 [{start,len}, ...]
+    // labelCentroids: 每个 label 的 centroid 向量（prompts 平均后归一化）
+    // labelEmbeds: 为兼容旧逻辑，默认指向 labelCentroids
+    labelEmbeds: null,
+    labelProtoEmbeds: null,
+    labelProtoIndex: null,
+    labelCentroids: null
   };
   // 暴露给跨文件工具（导出等）
   try { window.WIS = window.WIS || {}; window.WIS.state = state; } catch {}
@@ -1066,6 +1118,159 @@
       margin-top: 16px;
       text-align: center;
     }
+
+    /* =========================
+       Light theme overrides
+       - 覆盖默认蓝紫“赛博风”，统一为浅色系
+       - 不改布局，只改配色
+       ========================= */
+    .wis-mini,
+    .wis-detail-container {
+      background: #ffffff !important;
+      border: 1px solid #e5e7eb !important;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.10) !important;
+      backdrop-filter: none !important;
+    }
+
+    .wis-mini:hover {
+      border-color: #d1d5db !important;
+      box-shadow: 0 14px 36px rgba(15, 23, 42, 0.14) !important;
+    }
+
+    .wis-mini-header,
+    .wis-detail-header {
+      background: #f8fafc !important;
+      border-bottom: 1px solid #e5e7eb !important;
+    }
+
+    .wis-mini-title,
+    .wis-detail-title {
+      color: #111827 !important;
+    }
+
+    .wis-mini-badge,
+    .wis-detail-badge {
+      background: rgba(16, 185, 129, 0.14) !important;
+      color: #065f46 !important;
+    }
+
+    .wis-mini-expand,
+    .wis-detail-close {
+      background: #f1f5f9 !important;
+      color: #111827 !important;
+    }
+
+    .wis-mini-expand:hover,
+    .wis-detail-close:hover {
+      background: #e5e7eb !important;
+      transform: none !important;
+    }
+
+    .wis-mini-body,
+    .wis-detail-body {
+      background: transparent !important;
+    }
+
+    .wis-stat-card,
+    .wis-info-card,
+    .wis-toolbar,
+    .wis-settings,
+    #wis-chart,
+    #wis-reps,
+    .wis-log,
+    .wis-mini-status {
+      background: #ffffff !important;
+      border: 1px solid #e5e7eb !important;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06) !important;
+    }
+
+    .wis-stat-label,
+    .wis-info-title,
+    .wis-info-label,
+    .wis-mini-status,
+    .wis-toast-message {
+      color: #6b7280 !important;
+    }
+
+    .wis-stat-value,
+    .wis-info-value,
+    .wis-log {
+      background: none !important;
+      -webkit-text-fill-color: #111827 !important;
+      color: #111827 !important;
+      text-shadow: none !important;
+    }
+
+    .wis-stat-value.positive {
+      -webkit-text-fill-color: #16a34a !important;
+      color: #16a34a !important;
+    }
+    .wis-stat-value.negative {
+      -webkit-text-fill-color: #dc2626 !important;
+      color: #dc2626 !important;
+    }
+
+    .wis-mini-btn.primary,
+    .wis-btn.primary {
+      background: #16a34a !important;
+      border-color: #16a34a !important;
+      color: #ffffff !important;
+      box-shadow: 0 8px 18px rgba(22, 163, 74, 0.22) !important;
+    }
+    .wis-mini-btn.primary:hover,
+    .wis-btn.primary:hover {
+      transform: translateY(-1px) !important;
+      box-shadow: 0 10px 22px rgba(22, 163, 74, 0.26) !important;
+    }
+
+    .wis-mini-btn.secondary,
+    .wis-btn.secondary,
+    .wis-tab {
+      background: #f1f5f9 !important;
+      border-color: #e5e7eb !important;
+      color: #334155 !important;
+    }
+    .wis-mini-btn.secondary:hover,
+    .wis-btn.secondary:hover,
+    .wis-tab:hover {
+      background: #e5e7eb !important;
+      border-color: #d1d5db !important;
+    }
+
+    .wis-tab.active {
+      background: #16a34a !important;
+      border-color: #16a34a !important;
+      color: #ffffff !important;
+      box-shadow: 0 8px 18px rgba(22, 163, 74, 0.22) !important;
+    }
+
+    .wis-mini-status-dot {
+      background: #16a34a !important;
+      box-shadow: none !important;
+      animation: none !important;
+    }
+    .wis-mini-status-dot.idle { background: #9ca3af !important; }
+    .wis-mini-status-dot.error { background: #dc2626 !important; }
+
+    .wis-progress { background: #e5e7eb !important; }
+    .wis-progress-bar { background: #16a34a !important; box-shadow: none !important; }
+
+    .wis-detail-modal {
+      background: rgba(15, 23, 42, 0.25) !important;
+      backdrop-filter: none !important;
+    }
+
+    .wis-toast {
+      background: #ffffff !important;
+      border-color: #16a34a !important;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12) !important;
+    }
+    .wis-toast.error { border-color: #dc2626 !important; }
+    .wis-toast.warning { border-color: #f59e0b !important; }
+    .wis-toast-content { color: #111827 !important; }
+    .wis-toast-title { color: #111827 !important; }
+    .wis-toast-close { color: #6b7280 !important; }
+    .wis-toast-close:hover { color: #111827 !important; }
   `;
   document.documentElement.appendChild(style);
 
@@ -1176,12 +1381,12 @@
               <input class="wis-input" id="wis-clsTemp" type="number" value="0.08" min="0.01" max="1" step="0.01" />
             </div>
             <div class="wis-row">
-              <div class="wis-label">最佳下限</div>
-              <input class="wis-input" id="wis-clsBest" type="number" value="0.20" min="0" max="1" step="0.01" />
+              <div class="wis-label">pMin</div>
+              <input class="wis-input" id="wis-clsBest" type="number" value="0.22" min="0" max="1" step="0.01" />
             </div>
             <div class="wis-row">
-              <div class="wis-label">差距下限</div>
-              <input class="wis-input" id="wis-clsMargin" type="number" value="0.06" min="0" max="1" step="0.01" />
+              <div class="wis-label">hMax</div>
+              <input class="wis-input" id="wis-clsMargin" type="number" value="0.78" min="0" max="1" step="0.01" />
             </div>
             <div class="wis-row wis-row-buttons">
               <button class="wis-btn secondary" id="wis-eye">👁️</button>
@@ -1576,9 +1781,10 @@
   async function saveApiKey() {
     const key = ($apiKey.value || '').trim();
     const temp = Math.max(0.01, Math.min(1, Number($clsTemp?.value || '0.08')));
-    const best = Math.max(0, Math.min(1, Number($clsBest?.value || '0.2')));
-    const margin = Math.max(0, Math.min(1, Number($clsMargin?.value || '0.06')));
-    await callBG('set.config', { cfg: { apiKey: key, classifyTemp: temp, classifyMinBest: best, classifyMinMargin: margin } });
+    // 新版：pMin/hMax（概率阈值/熵阈值）
+    const pMin = Math.max(0, Math.min(1, Number($clsBest?.value || '0.22')));
+    const hMax = Math.max(0, Math.min(1, Number($clsMargin?.value || '0.78')));
+    await callBG('set.config', { cfg: { apiKey: key, classifyTemp: temp, pMin, hMax } });
     const cfgResp = await callBG('get.config');
     if (cfgResp.ok) state.cfg = cfgResp.cfg;
     log('✅ 设置已保存（API/分类参数）');
@@ -1592,9 +1798,9 @@
   if ($resetParams) {
     $resetParams.addEventListener('click', async () => {
       if ($clsTemp) $clsTemp.value = '0.08';
-      if ($clsBest) $clsBest.value = '0.20';
-      if ($clsMargin) $clsMargin.value = '0.06';
-      await callBG('set.config', { cfg: { classifyTemp: 0.08, classifyMinBest: 0.2, classifyMinMargin: 0.06 } });
+      if ($clsBest) $clsBest.value = '0.22';
+      if ($clsMargin) $clsMargin.value = '0.78';
+      await callBG('set.config', { cfg: { classifyTemp: 0.08, pMin: 0.22, hMax: 0.78 } });
       const cfgResp = await callBG('get.config');
       if (cfgResp.ok) state.cfg = cfgResp.cfg;
       log('🔄 已恢复分类参数默认值');
@@ -1609,7 +1815,17 @@
   // sum 已迁移至 WIS.utils.sum
 
   // 分类参数与函数（默认值，实际以选项页为准）
-  const CLASSIFY_DEFAULT = { temp: 0.08, minBest: 0.2, minMargin: 0.06, neutralKey: '中性' };
+  const CLASSIFY_DEFAULT = {
+    temp: 0.08,
+    // 新版：用概率阈值/熵阈值替代 raw best/second
+    pMin: 0.22,
+    hMax: 0.78,
+    adaptiveByLength: true,
+    // 兼容旧字段（仍可在旧配置里存在）
+    minBest: 0.2,
+    minMargin: 0.06,
+    neutralKey: '中性'
+  };
   function getClassifyCfg() {
     const cfg = state.cfg || {};
     const clampNum = (v, a, b, d) => {
@@ -1617,6 +1833,14 @@
     };
     return {
       temp: clampNum(cfg.classifyTemp, 0.01, 1.0, CLASSIFY_DEFAULT.temp),
+      // 新参数（优先使用），若未配置则走默认
+      pMin: clampNum(cfg.pMin, 0.0, 1.0, CLASSIFY_DEFAULT.pMin),
+      hMax: clampNum(cfg.hMax, 0.0, 1.0, CLASSIFY_DEFAULT.hMax),
+      adaptiveByLength: !!(cfg.adaptiveByLength ?? CLASSIFY_DEFAULT.adaptiveByLength),
+      // 连续门控参数
+      gateMode: (String(cfg.gateMode || 'mixed').toLowerCase()),
+      neutralGate: clampNum(cfg.neutralGate, 0.0, 1.0, 0.22),
+      // 旧参数保留（将逐步弃用）
       minBest: clampNum(cfg.classifyMinBest, 0.0, 1.0, CLASSIFY_DEFAULT.minBest),
       minMargin: clampNum(cfg.classifyMinMargin, 0.0, 1.0, CLASSIFY_DEFAULT.minMargin),
       neutralKey: CLASSIFY_DEFAULT.neutralKey
@@ -1629,6 +1853,75 @@
     const exps = arr.map(v => Math.exp((v - mx) / t));
     const s = exps.reduce((a,b)=>a+b,0) || 1;
     return exps.map(v => v / s);
+  }
+
+  function getProtoMode() {
+    const m = String(state.cfg?.protoMode || 'max').toLowerCase();
+    return (m === 'centroid' || m === 'max') ? m : 'max';
+  }
+
+  function computeLabelSims(emb, mode = 'max') {
+    const dotFn = (WIS && WIS.utils && WIS.utils.dot) ? WIS.utils.dot : null;
+    if (!dotFn) return new Array(state.labels.length).fill(0);
+
+    const labelN = state.labels.length;
+    const sims = new Array(labelN).fill(0);
+
+    if (mode === 'max' && state.labelProtoEmbeds && state.labelProtoIndex) {
+      for (let i = 0; i < labelN; i++) {
+        const idx = state.labelProtoIndex[i];
+        const start = idx ? idx.start : 0;
+        const len = idx ? idx.len : 0;
+        let best = -Infinity;
+        for (let k = 0; k < len; k++) {
+          const p = state.labelProtoEmbeds[start + k];
+          if (!p) continue;
+          const s = dotFn(emb, p);
+          if (s > best) best = s;
+        }
+        sims[i] = (best === -Infinity) ? 0 : best;
+      }
+      return sims;
+    }
+
+    // centroid 模式（或无 proto 数据时回退 centroid）
+    const cents = state.labelCentroids || state.labelEmbeds;
+    for (let i = 0; i < labelN; i++) {
+      const c = cents && cents[i];
+      sims[i] = c ? dotFn(emb, c) : 0;
+    }
+    return sims;
+  }
+
+  function normEntropy(weights) {
+    if (!weights || !weights.length) return 0;
+    if (weights.length === 1) return 0;
+    let ent = 0;
+    for (let i = 0; i < weights.length; i++) {
+      const p = weights[i] || 0;
+      if (p > 0) ent -= p * Math.log(p);
+    }
+    return ent / Math.log(weights.length);
+  }
+
+  function gateFromCfg(conf, entropy, gateMode) {
+    const mode = (gateMode === 'margin' || gateMode === 'entropy' || gateMode === 'mixed') ? gateMode : 'mixed';
+    const gMargin = clamp(conf / 0.12, 0, 1);     // 经验尺度：0.12 左右通常可拉开
+    const gEntropy = clamp(1 - entropy, 0, 1);    // 熵越低越确定
+    const base = (mode === 'margin') ? gMargin : (mode === 'entropy' ? gEntropy : (0.5 * gMargin + 0.5 * gEntropy));
+    // 保留一定“底噪”避免完全贴零
+    return clamp(0.25 + 0.75 * base, 0, 1);
+  }
+
+  function quantile(sortedArr, q) {
+    if (!sortedArr || !sortedArr.length) return 0;
+    const qq = Math.max(0, Math.min(1, q));
+    const idx = (sortedArr.length - 1) * qq;
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    if (lo === hi) return sortedArr[lo];
+    const w = idx - lo;
+    return sortedArr[lo] * (1 - w) + sortedArr[hi] * w;
   }
 
   // Stopwords & whitelist (from options)
@@ -1651,6 +1944,11 @@
 
   // 常见无信息词（词云/分词忽略）
   const IGNORE_WORDS = new Set(['视频','关注','点赞','投币','收藏','三连','转发']);
+
+  // Reuse Segmenter instance to avoid per-danmaku construction cost
+  const zhSegmenter = (typeof Intl !== 'undefined' && Intl.Segmenter)
+    ? new Intl.Segmenter('zh', { granularity: 'word' })
+    : null;
 
   // 文本规范化（表情/梗/重复等）
   function normalizeText(text) {
@@ -1681,9 +1979,8 @@
     const presentWL = new Set();
     for (const term of state.whitelist) { if (term && orig.includes(term)) { out.push(term); presentWL.add(term); } }
     try {
-      if (typeof Intl !== 'undefined' && Intl.Segmenter) {
-        const seg = new Intl.Segmenter('zh', { granularity: 'word' });
-        for (const s of seg.segment(orig)) {
+      if (zhSegmenter) {
+        for (const s of zhSegmenter.segment(orig)) {
           const w = s.segment && String(s.segment).trim();
           if (!w) continue;
           if (w.length <= 1) continue;
@@ -1845,11 +2142,16 @@
   }
 
   async function renderWordCloud(words) {
-    // Render keyword bar only (word cloud removed)
     try {
       const cm = await ensureChartManager();
       if (!cm) return;
-      await cm.renderWordBar({ words, topN: state.cfg?.wordTopN || 120 });
+      const enable = state.cfg?.enableWordCloud !== false;
+      const topN = enable ? (state.cfg?.wordCloudTopN || 120) : (state.cfg?.wordTopN || 120);
+      if (enable && typeof cm.renderWordCloud === 'function') {
+        await cm.renderWordCloud({ words, topN, shape: state.cfg?.wordCloudShape || 'circle' });
+      } else {
+        await cm.renderWordBar({ words, topN });
+      }
     } catch (e) {
       console.error('[WIS] render keywords error:', e);
       log('❌ 关键词渲染失败: ' + e.message);
@@ -1909,7 +2211,11 @@
         const after = filtered.map(x=>x.key).join('|');
         if (before !== after) {
           state.labels = filtered;
-          state.labelEmbeds = null; // 标签发生变更，重算嵌入
+          // 标签发生变更，重算嵌入（含多原型/centroid）
+          state.labelEmbeds = null;
+          state.labelProtoEmbeds = null;
+          state.labelProtoIndex = null;
+          state.labelCentroids = null;
           console.log('[WIS] 激活情绪标签:', after);
         }
       }
@@ -1924,37 +2230,97 @@
     }
     // 填充分类参数
     if ($clsTemp) $clsTemp.value = String(state.cfg.classifyTemp ?? 0.08);
-    if ($clsBest) $clsBest.value = String(state.cfg.classifyMinBest ?? 0.2);
-    if ($clsMargin) $clsMargin.value = String(state.cfg.classifyMinMargin ?? 0.06);
+    if ($clsBest) $clsBest.value = String(state.cfg.pMin ?? 0.22);
+    if ($clsMargin) $clsMargin.value = String(state.cfg.hMax ?? 0.78);
+  }
+
+  function getLabelPrompts(label) {
+    const ps = label && Array.isArray(label.prompts) ? label.prompts : null;
+    const arr = (ps && ps.length) ? ps : (label && label.prompt ? [label.prompt] : []);
+    const out = (arr || []).map(x => String(x || '').trim()).filter(Boolean);
+    // 至少保留一个可嵌入的文本
+    if (out.length) return out;
+    return [String(label?.key || '情绪')];
+  }
+
+  function averageVector(vectors) {
+    if (!vectors || !vectors.length) return null;
+    const dim = vectors[0].length || 0;
+    const out = new Array(dim).fill(0);
+    for (const v of vectors) {
+      if (!v || v.length !== dim) continue;
+      for (let i = 0; i < dim; i++) out[i] += v[i];
+    }
+    const n = vectors.length || 1;
+    for (let i = 0; i < dim; i++) out[i] /= n;
+    return out;
   }
 
   async function ensureLabelEmbeddings() {
-    if (state.labelEmbeds) return;
-    const inputs = state.labels.map(l => l.prompt);
+    // multi-prototype cache: proto embeddings + index + centroids
+    if (state.labelProtoEmbeds && state.labelProtoIndex && state.labelCentroids) return;
+
+    const perLabelPrompts = state.labels.map(getLabelPrompts);
+    const inputs = perLabelPrompts.flat();
+    const protoIndex = [];
+    let cursor = 0;
+    for (const ps of perLabelPrompts) {
+      protoIndex.push({ start: cursor, len: ps.length });
+      cursor += ps.length;
+    }
+
     const key = (() => {
       const model = state.cfg?.model || '';
       const dim = state.cfg?.dimensions || 0;
-      const h = (window.WIS && WIS.utils && WIS.utils.fnv1a) ? WIS.utils.fnv1a(inputs.join('|')) : Math.random().toString(16).slice(2);
-      return `wis_label_embeds:${model}:${dim}:${h}`;
+      const payload = `v2|${state.labels.map(l => l.key).join('|')}|${inputs.join('\n')}`;
+      const h = (window.WIS && WIS.utils && WIS.utils.fnv1a) ? WIS.utils.fnv1a(payload) : Math.random().toString(16).slice(2);
+      return `wis_label_proto_embeds:${model}:${dim}:${h}`;
     })();
+
     try {
       const cached = await new Promise(res => chrome.storage.local.get(key, v => res(v && v[key])));
       if (cached && Array.isArray(cached) && cached.length === inputs.length) {
-        state.labelEmbeds = cached;
+        state.labelProtoEmbeds = cached;
+        state.labelProtoIndex = protoIndex;
+        // 预计算 centroid（用于 centroid 模式 & 作为兼容 labelEmbeds）
+        const centroids = [];
+        for (const idx of protoIndex) {
+          const slice = state.labelProtoEmbeds.slice(idx.start, idx.start + idx.len);
+          const avg = averageVector(slice);
+          const normed = (WIS && WIS.utils && WIS.utils.norm) ? WIS.utils.norm(avg) : avg;
+          centroids.push(normed);
+        }
+        state.labelCentroids = centroids;
+        state.labelEmbeds = centroids;
         return;
       }
     } catch {}
+
     const resp = await callBG('embed.batch', { inputs });
     if (!resp.ok) throw new Error('标签嵌入失败：' + resp.error);
-    state.labelEmbeds = resp.embeddings.map((WIS && WIS.utils && WIS.utils.norm) ? WIS.utils.norm : (x=>x));
-    try { await new Promise(r => chrome.storage.local.set({ [key]: state.labelEmbeds }, r)); } catch {}
+
+    const normFn = (WIS && WIS.utils && WIS.utils.norm) ? WIS.utils.norm : (x=>x);
+    const protoEmbeds = resp.embeddings.map(normFn);
+    const centroids = [];
+    for (const idx of protoIndex) {
+      const slice = protoEmbeds.slice(idx.start, idx.start + idx.len);
+      const avg = averageVector(slice);
+      centroids.push(normFn(avg));
+    }
+
+    state.labelProtoEmbeds = protoEmbeds;
+    state.labelProtoIndex = protoIndex;
+    state.labelCentroids = centroids;
+    state.labelEmbeds = centroids; // 兼容旧路径
+
+    try { await new Promise(r => chrome.storage.local.set({ [key]: protoEmbeds }, r)); } catch {}
   }
 
   // 计算并缓存“AI 总结/大纲”先验的标签权重
   async function ensureSummaryPriors() {
     if (!state.cfg?.useSummaryPrior) return;
     if (!state._modelResult) return;
-    if (!state.labelEmbeds) return; // 需先有标签嵌入
+    if (!(state.labelProtoEmbeds && state.labelProtoIndex) && !state.labelCentroids && !state.labelEmbeds) return; // 需先有标签嵌入
     if (state._summaryPriors) return; // cached
     const mr = state._modelResult;
     const items = [];
@@ -1962,12 +2328,12 @@
       if (Array.isArray(mr.outline)) {
         for (const sec of mr.outline) {
           const t = Math.max(0, sec?.timestamp || 0);
-          const title = String(sec?.title || '').trim();
+          const title = pickFirstText(sec, ['title', 'content', 'summary', 'desc', 'text']);
           if (title) items.push({ t, text: title });
           if (Array.isArray(sec?.part_outline)) {
             sec.part_outline.slice(0,3).forEach(p => {
               const ts = Math.max(0, p?.timestamp || t);
-              const tt = String(p?.title || '').trim();
+              const tt = pickFirstText(p, ['content', 'title', 'summary', 'desc', 'text']);
               if (tt) items.push({ t: ts, text: tt });
             });
           }
@@ -1978,17 +2344,127 @@
     const resp = await callBG('embed.batch', { inputs: items.map(x => x.text) });
     if (!resp.ok) return;
     const embs = resp.embeddings.map((WIS && WIS.utils && WIS.utils.norm) ? WIS.utils.norm : (x=>x));
-    const labelEmbeds = state.labelEmbeds;
     const weightsList = [];
     for (let i = 0; i < embs.length; i++) {
       const e = embs[i];
-      const sims = new Array(labelEmbeds.length);
-      for (let k = 0; k < labelEmbeds.length; k++) sims[k] = WIS.utils.dot(e, labelEmbeds[k]);
+      const sims = computeLabelSims(e, getProtoMode());
       const clsCfg = getClassifyCfg();
       const w = softmax(sims, clsCfg.temp);
       weightsList.push(w);
     }
     state._summaryPriors = items.map((it, idx) => ({ t: it.t, weights: weightsList[idx] }));
+  }
+
+  // Fallback inline classifier (used if Worker unavailable)
+  function classifyGroupInline(group, embs, { protoMode, clsCfg, polArr, valArr, aroArr, neutralIdx, useSub, subCenters, subEmbeds }) {
+    const outputs = [];
+    const diag = {
+      n: 0,
+      lowConf: 0,
+      lowByP: 0,
+      lowByH: 0,
+      argmaxNeutral: 0,
+      pMaxs: [],
+      entropies: [],
+      gates: []
+    };
+    const normFn = (WIS && WIS.utils && WIS.utils.norm) ? WIS.utils.norm : (x => x);
+
+    for (let j = 0; j < group.length; j++) {
+      let e = embs[j];
+      if (!e) continue;
+
+      if (useSub && subCenters && subEmbeds) {
+        try {
+          const win = Math.max(1, Number(state.cfg.subtitleWindowSec || 6));
+          const beta = Math.max(0, Math.min(0.6, Number(state.cfg.subtitleWeight || 0.25)));
+          const tnow = group[j].t || 0;
+          let idx = binaryNearest(subCenters, tnow);
+          if (idx >= 0 && Math.abs(subCenters[idx] - tnow) <= win) {
+            const s = subEmbeds[idx];
+            if (Array.isArray(s) && s.length === e.length) {
+              const mix = new Array(e.length);
+              for (let q = 0; q < e.length; q++) mix[q] = e[q] + beta * s[q];
+              e = normFn(mix);
+            }
+          }
+        } catch {}
+      }
+
+      const sims = computeLabelSims(e, protoMode);
+      let weights = softmax(sims, clsCfg.temp);
+      if (state.cfg?.useSummaryPrior && Array.isArray(state._summaryPriors) && state._summaryPriors.length) {
+        try {
+          const tcur = group[j].t || 0;
+          let bestIdxPrior = 0; let bestDist = Infinity;
+          for (let q = 0; q < state._summaryPriors.length; q++) {
+            const d = Math.abs((state._summaryPriors[q].t || 0) - tcur);
+            if (d < bestDist) { bestDist = d; bestIdxPrior = q; }
+          }
+          const prior = state._summaryPriors[bestIdxPrior]?.weights || null;
+          const alpha = Math.max(0, Math.min(0.8, Number(state.cfg.summaryPriorWeight || 0.15)));
+          if (prior && alpha > 0) {
+            const mix = new Array(weights.length);
+            let sum = 0;
+            for (let k = 0; k < weights.length; k++) { const v = weights[k]*(1-alpha) + (prior[k]||0)*alpha; mix[k] = v; sum += v; }
+            if (sum > 0) weights = mix.map(v => v / sum);
+          }
+        } catch {}
+      }
+
+      const wsum = (arr) => arr.reduce((acc, v, idx) => acc + v * (weights[idx] || 0), 0);
+      let scoreW = clamp(wsum(polArr), -1, 1);
+      let vW = clamp(wsum(valArr), -1, 1);
+      let aW = clamp(wsum(aroArr), -1, 1);
+
+      let labelIdx = 0; { let m=-1; for (let k=0;k<weights.length;k++){ if (weights[k]>m){m=weights[k]; labelIdx=k;} } }
+      let labelKey = state.labels[labelIdx]?.key || state.labels[0].key;
+
+      let pMax = -1, p2 = -1;
+      for (let k = 0; k < weights.length; k++) {
+        const p = weights[k] || 0;
+        if (p > pMax) { p2 = pMax; pMax = p; }
+        else if (p > p2) { p2 = p; }
+      }
+      const entropy = normEntropy(weights);
+
+      let pMin = clsCfg.pMin;
+      let hMax = clsCfg.hMax;
+      if (clsCfg.adaptiveByLength) {
+        const len = String(group[j].text || '').trim().length;
+        const bonus = (len <= 4) ? 0.05 : 0;
+        pMin = clamp(pMin - bonus, 0, 1);
+        hMax = clamp(hMax + bonus, 0, 1);
+      }
+
+      const lowConf = (pMax < pMin) || (entropy > hMax);
+      const conf = clamp((pMax - p2), 0, 1);
+      const gate = gateFromCfg(conf, entropy, clsCfg.gateMode);
+
+      try {
+        diag.n++;
+        diag.pMaxs.push(pMax);
+        diag.entropies.push(entropy);
+        diag.gates.push(gate);
+        const argNeutral = (labelKey === clsCfg.neutralKey);
+        if (argNeutral) diag.argmaxNeutral++;
+        if (lowConf) {
+          diag.lowConf++;
+          if (pMax < pMin) diag.lowByP++;
+          if (entropy > hMax) diag.lowByH++;
+        }
+      } catch {}
+
+      if (lowConf) {
+        labelIdx = neutralIdx >= 0 ? neutralIdx : labelIdx;
+        labelKey = state.labels[labelIdx].key;
+        const ng = clamp(clsCfg.neutralGate, 0, 1);
+        outputs.push({ t: group[j].t, label: labelKey, labelIdx, score: clamp(scoreW * ng, -1, 1), valence: clamp(vW * ng, -1, 1), arousal: clamp(aW * ng, -1, 1), conf, pMax, entropy, gate, lowConf: true, text: group[j].text });
+      } else {
+        outputs.push({ t: group[j].t, label: labelKey, labelIdx, score: clamp(scoreW * gate, -1, 1), valence: clamp(vW * gate, -1, 1), arousal: clamp(aW * gate, -1, 1), conf, pMax, entropy, gate, lowConf: false, text: group[j].text });
+      }
+    }
+    return { outputs, diag };
   }
 
   async function analyze() {
@@ -2038,6 +2514,7 @@
         throw new Error(cidResp.error);
       }
       const cids = cidResp.cids || [];
+      const aid = cidResp.aid || 0;
       log(`✅ 分P数量：${cids.length}`);
       perfMonitor.mark('获取CID');
 
@@ -2064,7 +2541,7 @@
         try {
           updateMiniStatus('idle', `分P ${i+1}/${cids.length}：seg.so 抓取...`);
           const segTimeout = Math.max(90000, (state.cfg.segParallel || 4) * 22000);
-          const segResp = await callBG('bili.fetchAllDanmaku', { cid, parallel: state.cfg.segParallel || 4, ref }, { timeoutMs: segTimeout });
+          const segResp = await callBG('bili.fetchAllDanmaku', { cid, aid, parallel: state.cfg.segParallel || 4, ref }, { timeoutMs: segTimeout });
           perfMonitor.addAPI();
           if (segResp.ok) {
             bullets = bullets.concat(segResp.list || []);
@@ -2167,14 +2644,32 @@
       await ensureLabelEmbeddings();
       perfMonitor.addAPI();
       perfMonitor.mark('标签嵌入');
-      const labelEmbeds = state.labelEmbeds;
+      const protoMode = getProtoMode();
       // 计算章节先验（若启用）
       try { await ensureSummaryPriors(); } catch {}
+
+      // Hoist per-label constants & classify cfg out of hot loops
+      const clsCfg = getClassifyCfg();
+      const polArr = state.labels.map(l => l.polarity);
+      const valArr = state.labels.map(l => l.valence);
+      const aroArr = state.labels.map(l => l.arousal);
+      const neutralIdx = Math.max(0, state.labels.findIndex(l => l.key === clsCfg.neutralKey));
 
       updateMiniStatus('idle', '分析弹幕情绪...');
       log('🧠 请求远端嵌入（并发+限速） ...');
       const batches = chunk(cleaned, state.cfg.batchSize || 64);
       const outputs = [];
+      // 诊断统计（便于解释“为何中性多/结果差”）
+      const diag = {
+        n: 0,
+        lowConf: 0,
+        lowByP: 0,
+        lowByH: 0,
+        argmaxNeutral: 0,
+        pMaxs: [],
+        entropies: [],
+        gates: []
+      };
       // 速率与并发控制
       const concurrency = Math.max(1, state.cfg.embedConcurrency || 4);
       const delayMs = Math.max(0, state.cfg.embedDelayMs || 0);
@@ -2214,12 +2709,39 @@
         } catch {}
       }
 
+      // Initialize analysis worker with current config/embeddings context
+      let useWorker = false;
+      try {
+        await workerCall({
+          type: 'init',
+          labels: state.labels,
+          protoMode,
+          clsCfg,
+          labelProtoEmbeds: state.labelProtoEmbeds,
+          labelProtoIndex: state.labelProtoIndex,
+          labelCentroids: state.labelCentroids,
+          summaryPriors: (state.cfg?.useSummaryPrior && Array.isArray(state._summaryPriors)) ? state._summaryPriors : null,
+          summaryPriorWeight: state.cfg?.summaryPriorWeight,
+          useSubtitleContext: useSub,
+          subtitleCenters: subCenters,
+          subtitleEmbeds: subEmbeds,
+          subtitleWeight: state.cfg?.subtitleWeight,
+          subtitleWindowSec: state.cfg?.subtitleWindowSec,
+          stopwords: Array.from(state.stopwords || []),
+          whitelist: Array.from(state.whitelist || [])
+        }, 10000);
+        useWorker = true;
+      } catch (e) {
+        useWorker = false;
+      }
+
       let cursor = 0;
       async function worker(id) {
         while (true) {
           const i = cursor++;
           if (i >= batches.length) break;
           const group = batches[i];
+          const t0 = Date.now();
           const tokens = estimateTokens(group);
           await acquire(tokens);
           const resp = await callBG('embed.batch', { inputs: group.map(x => x.text) });
@@ -2230,82 +2752,32 @@
           }
           recordRateSample(tokens);
           updateRateUI();
-          const embs = resp.embeddings.map((WIS && WIS.utils && WIS.utils.norm) ? WIS.utils.norm : (x=>x));
-          for (let j = 0; j < group.length; j++) {
-            let e = embs[j];
-            // 字幕向量融合（向量级）：e = norm(e + beta * s)
-            if (useSub && subCenters && subEmbeds) {
-              try {
-                const win = Math.max(1, Number(state.cfg.subtitleWindowSec || 6));
-                const beta = Math.max(0, Math.min(0.6, Number(state.cfg.subtitleWeight || 0.25)));
-                const tnow = group[j].t || 0;
-                let idx = binaryNearest(subCenters, tnow);
-                if (idx >= 0 && Math.abs(subCenters[idx] - tnow) <= win) {
-                  const s = subEmbeds[idx];
-                  if (Array.isArray(s) && s.length === e.length) {
-                    const mix = new Array(e.length);
-                    for (let q = 0; q < e.length; q++) mix[q] = e[q] + beta * s[q];
-                    e = (WIS && WIS.utils && WIS.utils.norm) ? WIS.utils.norm(mix) : mix;
-                  }
-                }
-              } catch {}
+          const rawEmbs = resp.embeddings || [];
+          let batchRes = null;
+          if (useWorker) {
+            try {
+              batchRes = await workerCall({ type: 'classify', group, embeddings: rawEmbs }, 60000);
+            } catch (e) {
+              console.warn('[WIS] Worker classify failed, fallback inline:', e);
+              useWorker = false;
             }
-            const sims = new Array(labelEmbeds.length);
-            let bestIdx = 0, best = -Infinity, second = -Infinity;
-            for (let k = 0; k < labelEmbeds.length; k++) {
-              const s = (WIS && WIS.utils && WIS.utils.dot) ? WIS.utils.dot(e, labelEmbeds[k]) : 0;
-              sims[k] = s;
-              if (s > best) { second = best; best = s; bestIdx = k; }
-              else if (s > second) { second = s; }
-            }
-            const clsCfg = getClassifyCfg();
-            const conf = clamp((best - second), 0, 1);
-            let weights = softmax(sims, clsCfg.temp);
-            // 混合 AI 总结先验（按最近章节时间）
-            if (state.cfg?.useSummaryPrior && Array.isArray(state._summaryPriors) && state._summaryPriors.length) {
-              try {
-                const tcur = group[j].t || 0;
-                let bestIdxPrior = 0; let bestDist = Infinity;
-                for (let q = 0; q < state._summaryPriors.length; q++) {
-                  const d = Math.abs((state._summaryPriors[q].t || 0) - tcur);
-                  if (d < bestDist) { bestDist = d; bestIdxPrior = q; }
-                }
-                const prior = state._summaryPriors[bestIdxPrior]?.weights || null;
-                const alpha = Math.max(0, Math.min(0.8, Number(state.cfg.summaryPriorWeight || 0.15)));
-                if (prior && alpha > 0) {
-                  const mix = new Array(weights.length);
-                  let sum = 0;
-                  for (let k = 0; k < weights.length; k++) { const v = weights[k]*(1-alpha) + (prior[k]||0)*alpha; mix[k] = v; sum += v; }
-                  if (sum > 0) weights = mix.map(v => v / sum);
-                }
-              } catch {}
-            }
-            const pol = state.labels.map(l => l.polarity);
-            const val = state.labels.map(l => l.valence);
-            const aro = state.labels.map(l => l.arousal);
-            const wsum = (arr) => arr.reduce((acc, v, idx) => acc + v * (weights[idx] || 0), 0);
-            let scoreW = clamp(wsum(pol), -1, 1);
-            let vW = clamp(wsum(val), -1, 1);
-            let aW = clamp(wsum(aro), -1, 1);
-
-            const neutralIdx = Math.max(0, state.labels.findIndex(l => l.key === clsCfg.neutralKey));
-            // 使用混合后的概率选择最终类别
-            let labelIdx = 0; { let m=-1; for (let k=0;k<weights.length;k++){ if (weights[k]>m){m=weights[k]; labelIdx=k;} } }
-            let labelKey = state.labels[labelIdx]?.key || state.labels[0].key;
-
-            if (best < clsCfg.minBest || (best - second) < clsCfg.minMargin) {
-              // 低置信度：归为中性并将强度置零
-              labelIdx = neutralIdx >= 0 ? neutralIdx : bestIdx;
-              labelKey = state.labels[labelIdx].key;
-              outputs.push({ t: group[j].t, label: labelKey, labelIdx, score: 0, valence: 0, arousal: 0, conf: 0, text: group[j].text });
-            } else {
-              // 置信度门控下的加权得分（减小极端值）
-              const gate = 0.5 + 0.5 * conf;
-              const score = clamp(scoreW * gate, -1, 1);
-              const v = clamp(vW * gate, -1, 1);
-              const a = clamp(aW * gate, -1, 1);
-              outputs.push({ t: group[j].t, label: labelKey, labelIdx, score, valence: v, arousal: a, conf, text: group[j].text });
-            }
+          }
+          if (!batchRes) {
+            const normFn = (WIS && WIS.utils && WIS.utils.norm) ? WIS.utils.norm : (x => x);
+            const embs = rawEmbs.map(normFn);
+            batchRes = classifyGroupInline(group, embs, { protoMode, clsCfg, polArr, valArr, aroArr, neutralIdx, useSub, subCenters, subEmbeds });
+          }
+          if (batchRes && Array.isArray(batchRes.outputs)) outputs.push(...batchRes.outputs);
+          if (batchRes && batchRes.diag) {
+            const bd = batchRes.diag;
+            diag.n += bd.n || 0;
+            diag.lowConf += bd.lowConf || 0;
+            diag.lowByP += bd.lowByP || 0;
+            diag.lowByH += bd.lowByH || 0;
+            diag.argmaxNeutral += bd.argmaxNeutral || 0;
+            if (Array.isArray(bd.pMaxs)) diag.pMaxs.push(...bd.pMaxs);
+            if (Array.isArray(bd.entropies)) diag.entropies.push(...bd.entropies);
+            if (Array.isArray(bd.gates)) diag.gates.push(...bd.gates);
           }
           doneBatches++;
           const progress = (doneBatches / batches.length) * 80;
@@ -2326,38 +2798,56 @@
       // 缓存输出，构建多视图数据
       state._outputs = outputs;
       const bin = state.cfg.binSizeSec || 30;
-      const maxT = Math.max(...outputs.map(o=>o.t), 0);
-      const bins = Math.ceil((maxT + 1) / bin);
-      const labelN = state.labels.length;
-      const agg = Array.from({length: bins}, () => ({ n:0, sumPol:0, sumVal:0, sumAro:0, labelCnt: Array(labelN).fill(0) }));
-      outputs.forEach(o => {
-        const idx = Math.floor(o.t/bin); const a = agg[idx]; if(!a) return;
-        a.n++; a.sumPol+=o.score; a.sumVal+=o.valence; a.sumAro+=o.arousal; a.labelCnt[o.labelIdx]++;
-      });
-      const series = agg.map((a,i)=>[(i+0.5)*bin, a.n? a.sumPol/a.n:0]);
-      const arousal = agg.map((a,i)=>[(i+0.5)*bin, a.n? a.sumAro/a.n:0]);
-      const count = agg.map((a,i)=>[(i+0.5)*bin, a.n]);
-      state._trend = { series, count, arousal };
-
-      const stackSeries = Array.from({length: labelN}, (_,li) => agg.map((a,i)=>[(i+0.5)*bin, a.labelCnt[li]]));
-      state._stack = { stackSeries, labels: state.labels.map(x=>x.key) };
-
-      // 总体占比（饼图）
-      const labelCounts = new Array(labelN).fill(0);
-      outputs.forEach(o => { if (o.labelIdx>=0 && o.labelIdx<labelN) labelCounts[o.labelIdx]++; });
-      const pieData = state.labels.map((l, idx) => ({ name: l.key, value: labelCounts[idx] || 0 })).filter(d => d.value > 0);
-      state._pie = { data: pieData };
-
-      const points = agg.map((a,i)=>{ const x=a.n? a.sumVal/a.n:0; const y=a.n? a.sumAro/a.n:0; return [x,y,a.n,(i+0.5)*bin,a.n]; });
-      state._quad = { points };
-
-      const freq = new Map();
-      for (const o of outputs) {
-        for (const w of tokensCN(o.text)) { freq.set(w, (freq.get(w)||0)+1); }
-      }
       const topN = Math.max(10, Math.min(300, state.cfg.wordTopN || 120));
-      const words = Array.from(freq.entries()).sort((a,b)=>b[1]-a[1]).slice(0, topN).map(([name,value])=>({name,value}));
-      state._words = words;
+      if (useWorker) {
+        try {
+          const fin = await workerCall({ type: 'finalize', outputs, binSizeSec: bin, wordTopN: topN }, 60000);
+          if (fin && fin.trend) state._trend = fin.trend;
+          if (fin && fin.stack) state._stack = fin.stack;
+          if (fin && fin.pie) state._pie = fin.pie;
+          if (fin && fin.quad) state._quad = fin.quad;
+          if (fin && fin.words) state._words = fin.words;
+        } catch (e) {
+          console.warn('[WIS] Worker finalize failed, fallback inline:', e);
+          useWorker = false;
+        }
+      }
+      if (!useWorker) {
+        const maxT = Math.max(...outputs.map(o=>o.t), 0);
+        const bins = Math.ceil((maxT + 1) / bin);
+        const labelN = state.labels.length;
+        const agg = Array.from({length: bins}, () => ({ n:0, sumPol:0, sumVal:0, sumAro:0, labelCnt: Array(labelN).fill(0) }));
+        outputs.forEach(o => {
+          const idx = Math.floor(o.t/bin); const a = agg[idx]; if(!a) return;
+          a.n++; a.sumPol+=o.score; a.sumVal+=o.valence; a.sumAro+=o.arousal; a.labelCnt[o.labelIdx]++;
+        });
+        const series = agg.map((a,i)=>[(i+0.5)*bin, a.n? a.sumPol/a.n:0]);
+        const arousal = agg.map((a,i)=>[(i+0.5)*bin, a.n? a.sumAro/a.n:0]);
+        const count = agg.map((a,i)=>[(i+0.5)*bin, a.n]);
+        state._trend = { series, count, arousal };
+
+        const stackSeries = Array.from({length: labelN}, (_,li) => agg.map((a,i)=>[(i+0.5)*bin, a.labelCnt[li]]));
+        state._stack = { stackSeries, labels: state.labels.map(x=>x.key) };
+
+        const labelCounts = new Array(labelN).fill(0);
+        outputs.forEach(o => { if (o.labelIdx>=0 && o.labelIdx<labelN) labelCounts[o.labelIdx]++; });
+        const pieData = state.labels.map((l, idx) => ({ name: l.key, value: labelCounts[idx] || 0 })).filter(d => d.value > 0);
+        state._pie = { data: pieData };
+
+        const points = agg.map((a,i)=>{ const x=a.n? a.sumVal/a.n:0; const y=a.n? a.sumAro/a.n:0; return [x,y,a.n,(i+0.5)*bin,a.n]; });
+        state._quad = { points };
+
+        const freq = new Map();
+        for (const o of outputs) {
+          for (const w of tokensCN(o.text)) { freq.set(w, (freq.get(w)||0)+1); }
+        }
+        const words = Array.from(freq.entries()).sort((a,b)=>b[1]-a[1]).slice(0, topN).map(([name,value])=>({name,value}));
+        state._words = words;
+      }
+
+      const series = state._trend.series;
+      const count = state._trend.count;
+      const arousal = state._trend.arousal;
 
       const avgSentiment = (WIS && WIS.utils && WIS.utils.sum) ? (WIS.utils.sum(outputs.map(o => o.score)) / outputs.length) : 0;
       const positive = outputs.filter(o => o.score > 0.1).length;
@@ -2371,6 +2861,15 @@
       updateProgress(100);
       perfMonitor.mark('可视化完成');
       const perf = perfMonitor.end();
+      // 输出诊断摘要（解释“中性/结果差”）
+      try {
+        const pSorted = diag.pMaxs.slice().sort((a,b)=>a-b);
+        const hSorted = diag.entropies.slice().sort((a,b)=>a-b);
+        const gSorted = diag.gates.slice().sort((a,b)=>a-b);
+        const mean = (arr) => arr.length ? (arr.reduce((s,x)=>s+x,0)/arr.length) : 0;
+        log(`🧪 诊断：低置信→中性 ${diag.lowConf}/${diag.n}（pMax<pMin: ${diag.lowByP}，H>hMax: ${diag.lowByH}），argmax=中性 ${diag.argmaxNeutral}/${diag.n}`);
+        log(`🧪 pMax 分位：P50 ${quantile(pSorted,0.5).toFixed(3)} / P80 ${quantile(pSorted,0.8).toFixed(3)} / P95 ${quantile(pSorted,0.95).toFixed(3)}；熵均值 ${mean(hSorted).toFixed(3)}；门控均值 ${mean(gSorted).toFixed(3)}`);
+      } catch {}
       log(`✅ 分析完成！耗时 ${(perf.total / 1000).toFixed(2)}s, API 调用 ${perf.apiCalls} 次`);
       updateMiniStatus('idle', '分析完成');
       showToast('分析完成', `共分析 ${cleaned.length} 条弹幕，耗时 ${(perf.total/1000).toFixed(1)}s`, 'success');
@@ -2625,9 +3124,20 @@
     const m = Math.floor(sec/60), s = Math.floor(sec%60);
     return `${m}:${String(s).padStart(2,'0')}`;
   }
+
+  function pickFirstText(obj, keys) {
+    if (!obj || !keys || !keys.length) return '';
+    for (const k of keys) {
+      const v = obj?.[k];
+      if (typeof v !== 'string') continue;
+      const t = v.trim();
+      if (t) return t;
+    }
+    return '';
+  }
   function renderSummary(modelResult) {
     try {
-      const summary = modelResult?.summary;
+      const summary = (typeof modelResult?.summary === 'string') ? modelResult.summary : '';
       const outline = modelResult?.outline;
       if (!summary && !Array.isArray(outline)) { $summaryCard.style.display='none'; return; }
       $summaryCard.style.display='block';
@@ -2640,14 +3150,17 @@
           item.className = 'wis-summary-item';
           const t = Math.max(0, sec?.timestamp || 0);
           item.setAttribute('data-ts', String(t));
-          item.innerHTML = `<span class="wis-summary-time">${formatMMSSLocal(t)}</span>${(sec?.title||'').replace(/</g,'&lt;')}`;
+          const secText = pickFirstText(sec, ['title', 'content', 'summary', 'desc', 'text']);
+          item.innerHTML = `<span class="wis-summary-time">${formatMMSSLocal(t)}</span>${escapeHTML(secText)}`;
           if (Array.isArray(sec?.part_outline)) {
             sec.part_outline.slice(0,3).forEach(p => {
+              const partText = pickFirstText(p, ['content', 'title', 'summary', 'desc', 'text']);
+              if (!partText) return;
               const sub = document.createElement('div');
               const ts = Math.max(0, p?.timestamp || t);
               sub.className = 'wis-summary-sub';
               sub.setAttribute('data-ts', String(ts));
-              sub.innerHTML = `<span class="wis-summary-time">${formatMMSSLocal(ts)}</span>${(p?.title||'').replace(/</g,'&lt;')}`;
+              sub.innerHTML = `<span class="wis-summary-time">${formatMMSSLocal(ts)}</span>${escapeHTML(partText)}`;
               item.appendChild(sub);
             });
           }

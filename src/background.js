@@ -11,6 +11,13 @@ const DEFAULT_CFG = {
   classifyTemp: 0.08,
   classifyMinBest: 0.2,
   classifyMinMargin: 0.06,
+  // calibration (prob/entropy + gating)
+  protoMode: 'max',          // 'max' | 'centroid'
+  pMin: 0.22,                // max prob threshold
+  hMax: 0.78,                // normalized entropy threshold
+  adaptiveByLength: true,    // loosen thresholds for very short texts
+  gateMode: 'mixed',         // 'margin' | 'entropy' | 'mixed'
+  neutralGate: 0.22,         // strength scaling when low confidence -> neutral
   // lexicon options
   enableStopwords: true,
   stopwordsBuiltIn: 'full',
@@ -43,6 +50,9 @@ const DEFAULT_CFG = {
   tpmLimit: 1000000,
   segParallel: 8,
   wordTopN: 30,
+  enableWordCloud: true,
+  wordCloudTopN: 120,
+  wordCloudShape: 'circle',
   // history danmaku
   enableHistory: true,
   historyMonths: 1,
@@ -60,6 +70,12 @@ const STORAGE_DEFAULTS = {
   classifyTemp: DEFAULT_CFG.classifyTemp,
   classifyMinBest: DEFAULT_CFG.classifyMinBest,
   classifyMinMargin: DEFAULT_CFG.classifyMinMargin,
+  protoMode: DEFAULT_CFG.protoMode,
+  pMin: DEFAULT_CFG.pMin,
+  hMax: DEFAULT_CFG.hMax,
+  adaptiveByLength: DEFAULT_CFG.adaptiveByLength,
+  gateMode: DEFAULT_CFG.gateMode,
+  neutralGate: DEFAULT_CFG.neutralGate,
   enableStopwords: DEFAULT_CFG.enableStopwords,
   stopwordsBuiltIn: DEFAULT_CFG.stopwordsBuiltIn,
   customStopwords: DEFAULT_CFG.customStopwords,
@@ -78,6 +94,9 @@ const STORAGE_DEFAULTS = {
   tpmLimit: DEFAULT_CFG.tpmLimit,
   segParallel: DEFAULT_CFG.segParallel,
   wordTopN: DEFAULT_CFG.wordTopN,
+  enableWordCloud: DEFAULT_CFG.enableWordCloud,
+  wordCloudTopN: DEFAULT_CFG.wordCloudTopN,
+  wordCloudShape: DEFAULT_CFG.wordCloudShape,
   enableHistory: DEFAULT_CFG.enableHistory,
   historyMonths: DEFAULT_CFG.historyMonths,
   historyDateLimit: DEFAULT_CFG.historyDateLimit,
@@ -144,6 +163,19 @@ async function biliFetchText(url) {
   return r.text();
 }
 
+async function biliFetchArrayBuffer(url, referrer) {
+  const { useCookies } = await getConfig();
+  const r = await fetch(url, {
+    credentials: useCookies ? 'include' : 'omit',
+    referrer: referrer || 'https://www.bilibili.com/',
+    cache: 'no-cache',
+    mode: 'cors',
+    headers: { 'Accept': '*/*' }
+  });
+  if (!r.ok) throw new Error(`Bili Binary ${r.status}`);
+  return r.arrayBuffer();
+}
+
 const RETRYABLE_EMBED_ERROR = /SiliconFlow\s5\d{2}|50500|timeout|Failed to fetch/i;
 
 async function siliconflowEmbed({ inputs, model, dimensions, encoding_format = 'float' }) {
@@ -208,6 +240,172 @@ async function siliconflowEmbed({ inputs, model, dimensions, encoding_format = '
 
   const safeInputs = Array.isArray(inputs) ? inputs : [];
   return embedAdaptive(safeInputs);
+}
+
+// --------- Embedding cache (LRU + localStorage) ---------
+// Cache embeddings by text hash to reduce duplicate API calls.
+// Use chrome.storage.local with a small LRU to stay within MV3 local quota.
+const EMBED_CACHE_MAX = 128;
+const EMBED_LRU_KEY = 'wis_embed_lru_v1';
+const _embedMemCache = new Map(); // key -> Float32Array
+let _embedLRUMeta = null;         // { order: string[] }
+
+function embedCacheKey(text, model, dimensions) {
+  const t = String(text ?? '').trim();
+  const h = md5(t);
+  return `wis_emb:${model}:${dimensions}:${h}`;
+}
+
+function encodeEmbedding(vec) {
+  try {
+    const f32 = (vec instanceof Float32Array) ? vec : Float32Array.from(vec || []);
+    const bytes = new Uint8Array(f32.buffer);
+    let bin = '';
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(bin);
+  } catch {
+    return null;
+  }
+}
+
+function decodeEmbedding(b64) {
+  try {
+    const bin = atob(String(b64 || ''));
+    const len = bin.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+    return new Float32Array(bytes.buffer);
+  } catch {
+    return null;
+  }
+}
+
+async function loadEmbedLRU() {
+  if (_embedLRUMeta) return _embedLRUMeta;
+  try {
+    const res = await chrome.storage.local.get(EMBED_LRU_KEY);
+    const meta = res && res[EMBED_LRU_KEY];
+    _embedLRUMeta = (meta && Array.isArray(meta.order)) ? meta : { order: [] };
+  } catch {
+    _embedLRUMeta = { order: [] };
+  }
+  return _embedLRUMeta;
+}
+
+async function touchEmbedKeys(keys) {
+  if (!keys || !keys.length) return;
+  const meta = await loadEmbedLRU();
+  let order = Array.isArray(meta.order) ? meta.order.slice() : [];
+  const uniq = Array.from(new Set(keys));
+  for (const k of uniq) {
+    const idx = order.indexOf(k);
+    if (idx >= 0) order.splice(idx, 1);
+  }
+  order.push(...uniq);
+
+  let evicted = [];
+  if (order.length > EMBED_CACHE_MAX) {
+    evicted = order.slice(0, order.length - EMBED_CACHE_MAX);
+    order = order.slice(order.length - EMBED_CACHE_MAX);
+  }
+  meta.order = order;
+  _embedLRUMeta = meta;
+
+  try {
+    if (evicted.length) {
+      evicted.forEach(k => _embedMemCache.delete(k));
+      await chrome.storage.local.remove(evicted);
+    }
+    await chrome.storage.local.set({ [EMBED_LRU_KEY]: meta });
+  } catch {}
+}
+
+async function embedBatchCached(inputs, model, dimensions) {
+  const safeInputs = Array.isArray(inputs) ? inputs : [];
+  const texts = safeInputs.map(x => String(x ?? '').trim());
+  const keys = texts.map(t => embedCacheKey(t, model, dimensions));
+
+  const out = new Array(texts.length);
+  const usedKeys = [];
+  const needKeys = [];
+  const needTexts = [];
+  const keyToIdxs = new Map(); // key -> indices
+
+  for (let i = 0; i < texts.length; i++) {
+    const key = keys[i];
+    const mem = _embedMemCache.get(key);
+    if (mem) {
+      out[i] = mem;
+      usedKeys.push(key);
+      continue;
+    }
+    let idxs = keyToIdxs.get(key);
+    if (!idxs) {
+      idxs = [];
+      keyToIdxs.set(key, idxs);
+      needKeys.push(key);
+      needTexts.push(texts[i]);
+    }
+    idxs.push(i);
+  }
+
+  // Load from local cache for unique missing keys.
+  if (needKeys.length) {
+    let localRes = {};
+    try { localRes = await chrome.storage.local.get(needKeys); } catch {}
+    for (let u = 0; u < needKeys.length; u++) {
+      const key = needKeys[u];
+      const b64 = localRes[key];
+      if (typeof b64 === 'string') {
+        const f32 = decodeEmbedding(b64);
+        if (f32 && f32.length) {
+          _embedMemCache.set(key, f32);
+          usedKeys.push(key);
+          const idxs = keyToIdxs.get(key) || [];
+          for (const i of idxs) out[i] = f32;
+        }
+      }
+    }
+  }
+
+  // Collect still-missing unique texts.
+  const missKeys = [];
+  const missTexts = [];
+  for (let u = 0; u < needKeys.length; u++) {
+    const key = needKeys[u];
+    const idxs = keyToIdxs.get(key) || [];
+    if (idxs.length && out[idxs[0]] === undefined) {
+      missKeys.push(key);
+      missTexts.push(needTexts[u]);
+    }
+  }
+
+  if (missTexts.length) {
+    const embeds = await siliconflowEmbed({ inputs: missTexts, model, dimensions });
+    const toStore = {};
+    for (let u = 0; u < missKeys.length; u++) {
+      const key = missKeys[u];
+      const vec = embeds[u];
+      if (!vec || !vec.length) continue;
+      const f32 = Float32Array.from(vec);
+      _embedMemCache.set(key, f32);
+      usedKeys.push(key);
+      const idxs = keyToIdxs.get(key) || [];
+      for (const i of idxs) out[i] = f32;
+      const b64 = encodeEmbedding(f32);
+      if (b64) toStore[key] = b64;
+    }
+    try { if (Object.keys(toStore).length) await chrome.storage.local.set(toStore); } catch {}
+  }
+
+  // Update LRU order / evict old entries.
+  try { await touchEmbedKeys(usedKeys); } catch {}
+
+  // Convert Float32Array -> plain array for content scripts.
+  return out.map(v => (v && typeof v.length === 'number') ? Array.from(v) : v);
 }
 
 // --------- WBI 签名 & AI Summary 支持 ---------
@@ -357,7 +555,7 @@ function skipField(u8, pos, wireType) {
     case 1: return pos + 8;               // 64-bit
     case 2: { const [len, p] = readVarint(u8, pos); return p + len; } // length-delimited
     case 5: return pos + 4;               // 32-bit
-    default: return pos;                  // unsupported groups
+    default: return u8.length;            // unsupported groups -> stop parsing
   }
 }
 
@@ -375,7 +573,9 @@ function decodeDmSeg(buf) {
         const tt = readVarint(u8, pos); pos = tt[1]; const f = tt[0] >>> 3; const w = tt[0] & 7;
         if (f === 2 && w === 0) { const rv = readVarint(u8, pos); progress = rv[0]; pos = rv[1]; continue; }
         if (f === 7 && w === 2) { const r2 = readVarint(u8, pos); const l2 = r2[0]; pos = r2[1]; content = textDecoder.decode(u8.subarray(pos, pos + l2)); pos += l2; continue; }
-        pos = skipField(u8, pos, w);
+        const nextPos = skipField(u8, pos, w);
+        if (nextPos === pos) { pos = subEnd; break; }
+        pos = nextPos;
       }
       if (content) out.push({ t: progress / 1000, text: content });
       continue;
@@ -385,15 +585,74 @@ function decodeDmSeg(buf) {
   return out;
 }
 
-async function biliDmView(cid) {
-  const url = `https://api.bilibili.com/x/v2/dm/web/view?type=1&oid=${cid}`;
-  const j = await biliFetchJson(url);
-  const total = j?.data?.dmSge?.total || 1;
-  return { total };
+function decodeDmSegInfo(u8) {
+  // dm_seg message: field 1 page_size(varint), field 2 total(varint)
+  let pos = 0;
+  let pageSize = 0;
+  let total = 0;
+  while (pos < u8.length) {
+    const [tag, p2] = readVarint(u8, pos); pos = p2;
+    const field = tag >>> 3;
+    const wt = tag & 7;
+    if (field === 1 && wt === 0) { const [v, p3] = readVarint(u8, pos); pageSize = v; pos = p3; continue; }
+    if (field === 2 && wt === 0) { const [v, p3] = readVarint(u8, pos); total = v; pos = p3; continue; }
+    const nextPos = skipField(u8, pos, wt);
+    if (nextPos === pos) break;
+    pos = nextPos;
+  }
+  return { pageSize, total };
 }
 
-async function biliDmSeg(cid, index, referrer) {
-  const url = `https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=${cid}&segment_index=${index}`;
+function decodeDmView(buf) {
+  // DmWebViewReply: field 4 dm_seg (len-delimited message), field 8 count (varint)
+  const u8 = new Uint8Array(buf);
+  let pos = 0;
+  let dmSeg = { pageSize: 0, total: 0 };
+  let count = 0;
+  while (pos < u8.length) {
+    const [tag, p2] = readVarint(u8, pos); pos = p2;
+    const field = tag >>> 3;
+    const wt = tag & 7;
+    if (field === 4 && wt === 2) {
+      const [len, p3] = readVarint(u8, pos); pos = p3;
+      const sub = u8.subarray(pos, pos + len);
+      pos += len;
+      dmSeg = decodeDmSegInfo(sub);
+      continue;
+    }
+    if (field === 8 && wt === 0) {
+      const [v, p3] = readVarint(u8, pos);
+      count = v;
+      pos = p3;
+      continue;
+    }
+    const nextPos = skipField(u8, pos, wt);
+    if (nextPos === pos) break;
+    pos = nextPos;
+  }
+  return { dmSeg, count };
+}
+
+async function biliDmView(cid, aid, referrer) {
+  // IMPORTANT: this endpoint returns protobuf, not JSON.
+  // Python 版使用 pid=aid 组合（更稳），这里对齐。
+  const pid = Number(aid || 0);
+  const url = pid
+    ? `https://api.bilibili.com/x/v2/dm/web/view?type=1&oid=${cid}&pid=${pid}`
+    : `https://api.bilibili.com/x/v2/dm/web/view?type=1&oid=${cid}`;
+  const buf = await biliFetchArrayBuffer(url, referrer);
+  const view = decodeDmView(buf);
+  const total = Math.max(1, Number(view?.dmSeg?.total || 1));
+  const pageSize = Math.max(0, Number(view?.dmSeg?.pageSize || 0));
+  const count = Math.max(0, Number(view?.count || 0));
+  return { total, pageSize, count };
+}
+
+async function biliDmSeg(cid, aid, index, referrer) {
+  const pid = Number(aid || 0);
+  const url = pid
+    ? `https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=${cid}&pid=${pid}&segment_index=${index}`
+    : `https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=${cid}&segment_index=${index}`;
   const { useCookies } = await getConfig();
   const r = await fetch(url, {
     credentials: useCookies ? 'include' : 'omit',
@@ -403,9 +662,7 @@ async function biliDmSeg(cid, index, referrer) {
     headers: { 'Accept': '*/*' }
   });
   const status = r.status;
-  if (!r.ok) {
-    return { ok: false, status, list: [] };
-  }
+  if (!r.ok) return { ok: false, status, list: [] };
   const buf = await r.arrayBuffer();
   return { ok: true, status, list: decodeDmSeg(buf) };
 }
@@ -446,7 +703,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const j = await biliFetchJson(url);
         const cids = Array.isArray(j?.data) ? j.data.map(p => p.cid).filter(Boolean) : [];
         if (!cids.length) throw new Error('未获取到任何 cid');
-        sendResponse({ ok: true, cids });
+        // 同时返回 aid（seg.so / web.view 的 pid 参数需要）
+        let aid = null;
+        try {
+          const view = await biliFetchJson(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`);
+          aid = view?.data?.aid || null;
+        } catch {}
+        sendResponse({ ok: true, cids, aid });
         return;
       }
 
@@ -460,8 +723,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       if (msg && msg.type === 'bili.fetchAllDanmaku') {
         const cid = msg.cid;
+        const aid = msg.aid || msg.pid || 0;
         const ref = msg.ref;
-        const view = await biliDmView(cid);
+        const view = await biliDmView(cid, aid, ref);
         const total = Math.max(1, view.total || 1);
         const { segParallel = 4 } = await getConfig();
         const limitParallel = Math.min(6, msg.parallel || segParallel || 4);
@@ -476,7 +740,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             // retry on 412/403 with exponential backoff
             let attempt = 0; let res = null; let lastStatus = 0;
             while (attempt < 3) {
-              res = await biliDmSeg(cid, idx, ref);
+              res = await biliDmSeg(cid, aid, idx, ref);
               lastStatus = res?.status || 0;
               if (res && res.ok) break;
               if (lastStatus === 412 || lastStatus === 403) {
@@ -526,7 +790,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return ta - tb;
           });
         }
-        sendResponse({ ok: true, list: flat, diag, totalSegments: total });
+        sendResponse({ ok: true, list: flat, diag, totalSegments: total, viewCount: view?.count || 0, pageSize: view?.pageSize || 0 });
         return;
       }
 
@@ -556,7 +820,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg && msg.type === 'embed.batch') {
         const { inputs } = msg;
         const { model, dimensions } = await getConfig();
-        const embeddings = await siliconflowEmbed({ inputs, model, dimensions });
+        const embeddings = await embedBatchCached(inputs, model, dimensions);
         sendResponse({ ok: true, embeddings });
         return;
       }

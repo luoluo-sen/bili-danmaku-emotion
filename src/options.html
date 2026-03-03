@@ -462,15 +462,59 @@
         </div>
 
         <div class="form-group">
+          <label for="protoMode">标签原型聚合（推荐 max）</label>
+          <select id="protoMode">
+            <option value="max">max：与该类多个原型取最大相似度（短弹幕更稳）</option>
+            <option value="centroid">centroid：原型取中心向量（更快）</option>
+          </select>
+          <div class="hint">多原型可提升口语/梗弹幕的匹配效果。</div>
+        </div>
+
+        <div class="form-group">
+          <label for="pMin">中性判定：pMax 下限（pMin）</label>
+          <input id="pMin" type="number" value="0.22" min="0" max="1" step="0.01" />
+          <div class="hint">softmax 后 Top1 概率低于此值，视为不确定（归为中性）。</div>
+        </div>
+
+        <div class="form-group">
+          <label for="hMax">中性判定：归一化熵上限（hMax）</label>
+          <input id="hMax" type="number" value="0.78" min="0" max="1" step="0.01" />
+          <div class="hint">分布越“平均”熵越高，超过阈值视为不确定（归为中性）。</div>
+        </div>
+
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input id="adaptiveByLength" type="checkbox" checked /> 短弹幕自适应（len≤4 自动放宽阈值）
+          </label>
+          <div class="hint">对“草/哈哈/？？？”等短文本更友好，减少被动全中性。</div>
+        </div>
+
+        <div class="form-group">
+          <label for="gateMode">强度门控（连续缩放）</label>
+          <select id="gateMode">
+            <option value="mixed">mixed：综合概率差与熵（推荐）</option>
+            <option value="margin">margin：仅用 pMax-p2</option>
+            <option value="entropy">entropy：仅用 1-熵</option>
+          </select>
+          <div class="hint">用于把强度连续缩放，避免过多“强度=0”。</div>
+        </div>
+
+        <div class="form-group">
+          <label for="neutralGate">低置信归中性时的强度系数（neutralGate）</label>
+          <input id="neutralGate" type="number" value="0.22" min="0" max="1" step="0.01" />
+          <div class="hint">低置信不再强制归零，而是按该系数保留少量强度信息。</div>
+        </div>
+
+        <div class="form-group">
           <label for="classifyMinBest">中性阈值一：最佳相似度下限</label>
           <input id="classifyMinBest" type="number" value="0.20" min="0" max="1" step="0.01" />
-          <div class="hint">低于此值视为不确定（中性），默认 0.20</div>
+          <div class="hint">兼容旧版本（新版主要使用 pMin/hMax），默认 0.20</div>
         </div>
 
         <div class="form-group">
           <label for="classifyMinMargin">中性阈值二：前二差距下限</label>
           <input id="classifyMinMargin" type="number" value="0.06" min="0" max="1" step="0.01" />
-          <div class="hint">Top1-Top2 小于此差值视为不确定（中性），默认 0.06</div>
+          <div class="hint">兼容旧版本（新版主要使用 pMin/hMax），默认 0.06</div>
         </div>
       </div>
 
@@ -587,6 +631,31 @@
           <label for="wordTopN">关键词 Top N</label>
           <input id="wordTopN" type="number" value="30" min="10" max="120" />
           <div class="hint">用于关键词条形图的最大词数</div>
+        </div>
+
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input id="enableWordCloud" type="checkbox" checked /> 启用词云图（优先展示词云，失败自动回退条形图）
+          </label>
+          <div class="hint">词云基于 ECharts wordCloud 插件渲染；已内置在扩展中。</div>
+        </div>
+
+        <div class="form-group">
+          <label for="wordCloudTopN">词云 Top N</label>
+          <input id="wordCloudTopN" type="number" value="120" min="10" max="300" />
+          <div class="hint">词云展示的最大词数，建议 80~150。</div>
+        </div>
+
+        <div class="form-group">
+          <label for="wordCloudShape">词云形状</label>
+          <select id="wordCloudShape">
+            <option value="circle">circle</option>
+            <option value="cardioid">cardioid</option>
+            <option value="diamond">diamond</option>
+            <option value="triangle">triangle</option>
+            <option value="pentagon">pentagon</option>
+            <option value="star">star</option>
+          </select>
         </div>
       </div>
 

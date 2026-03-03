@@ -110,14 +110,16 @@ class ChartManager {
       return window.echarts;
     }
 
-    // Fallback: try loading from various sources
-    console.log('[ChartManager] ECharts not found, attempting to load...');
+    // If we're in an extension context, don't inject scripts into the page.
+    // Page CSP (e.g. on Bilibili) blocks both remote and chrome-extension:// script tags.
+    if (typeof chrome !== 'undefined' && chrome?.runtime?.id) {
+      console.warn('[ChartManager] ECharts not found in content_scripts; CSP prevents dynamic load.');
+      return null;
+    }
 
-    const local = (typeof chrome !== 'undefined' && chrome?.runtime?.getURL)
-      ? chrome.runtime.getURL('src/vendor/echarts.min.js')
-      : null;
+    // Non-extension fallback: try loading from public CDNs.
+    console.log('[ChartManager] ECharts not found, attempting CDN load...');
     const urls = [
-      ...(local ? [local] : []),
       'https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js',
       'https://unpkg.com/echarts@5/dist/echarts.min.js',
       'https://fastly.jsdelivr.net/npm/echarts@5/dist/echarts.min.js',
@@ -156,15 +158,24 @@ class ChartManager {
   async _loadWordCloud() {
     if (window._wisWordCloudLoaded) return true;
 
-    const local = (typeof chrome !== 'undefined' && chrome?.runtime?.getURL)
-      ? chrome.runtime.getURL('src/vendor/echarts-wordcloud.min.js')
-      : null;
+    // In extension builds, echarts-wordcloud is bundled as a content_script
+    // (see manifest.json). It registers itself and exposes window["echarts-wordcloud"].
+    if (window['echarts-wordcloud']) {
+      window._wisWordCloudLoaded = true;
+      return true;
+    }
+
+    // If we're running inside an extension context, don't inject <script> tags
+    // into the page: Bilibili CSP blocks both remote and chrome-extension:// URLs.
+    if (typeof chrome !== 'undefined' && chrome?.runtime?.id) {
+      return false;
+    }
+
+    // Non-extension fallback (e.g. local demo pages): try public CDNs.
     const urls = [
-      ...(local ? [local] : []),
       'https://cdn.jsdelivr.net/npm/echarts-wordcloud@2/dist/echarts-wordcloud.min.js',
       'https://unpkg.com/echarts-wordcloud@2/dist/echarts-wordcloud.min.js'
     ];
-
     for (const url of urls) {
       try {
         await this._loadScript(url);
@@ -573,6 +584,81 @@ class ChartManager {
   }
 
   // Word cloud removed; use renderWordBar instead
+  async renderWordCloud({ words, topN = 120, shape = 'circle' }) {
+    await this.init();
+    if (!this.chartInstance) return;
+
+    const list = (words || [])
+      .slice(0, topN)
+      .map(w => ({ name: String(w.name || ''), value: Number(w.value || 0) }))
+      .filter(x => x.name && isFinite(x.value) && x.value > 0);
+
+    if (!list.length) {
+      return this.renderWordBar({ words, topN });
+    }
+
+    // ensure plugin loaded (if already in content_scripts, this is cheap)
+    try { await this._loadWordCloud(); } catch {}
+
+    // remove wc2 host if any
+    try { const c = document.getElementById(this.containerId); const h = c && c.querySelector('.wis-wc2-host'); if (h) h.remove(); } catch {}
+    this._ensureInstanceIntegrity();
+    this.chartInstance.clear();
+
+    // deterministic palette
+    const palette = ['#0ea5e9', '#22c55e', '#f97316', '#a855f7', '#ef4444', '#14b8a6', '#64748b'];
+    const hash = (s) => {
+      let h = 2166136261;
+      for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 16777619) >>> 0; }
+      return h >>> 0;
+    };
+
+    try {
+      this.chartInstance.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+          trigger: 'item',
+          backgroundColor: 'rgba(17,24,39,.95)',
+          textStyle: { color: '#e5e7eb' },
+          formatter: (p) => {
+            const name = p?.name || '';
+            const v = p?.value ?? 0;
+            let html = `<div style="font-size:13px;font-weight:700;margin-bottom:4px;">${name}</div>`;
+            html += `<div style="margin:2px 0;">出现次数: ${v}</div>`;
+            html += `<div style="font-size:11px;color:#9ca3af;margin-top:6px;">点击查看相关弹幕</div>`;
+            return html;
+          }
+        },
+        series: [{
+          type: 'wordCloud',
+          shape: shape || 'circle',
+          gridSize: 8,
+          sizeRange: [12, 56],
+          rotationRange: [0, 0],
+          textStyle: {
+            fontFamily: '-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif',
+            color: (p) => palette[hash(String(p?.name || '')) % palette.length]
+          },
+          emphasis: {
+            textStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,.25)' }
+          },
+          data: list
+        }]
+      });
+
+      this.chartInstance.off('click');
+      this.chartInstance.on('click', (p) => {
+        const word = p?.name;
+        if (word) window.postMessage({ type: 'WIS_CHART_CLICK', chart: 'word', word }, '*');
+      });
+
+      this._postRender();
+    } catch (e) {
+      // Unknown series type / plugin blocked => fallback
+      console.warn('[ChartManager] renderWordCloud failed, fallback to bar:', e?.message || e);
+      return this.renderWordBar({ words, topN });
+    }
+  }
 
   // Public: render bar keywords (biliscope-style fallback / when cloud disabled)
   async renderWordBar({ words, topN = 120 }) {

@@ -12,6 +12,9 @@ const DEFAULT_CONFIG = {
   tpmLimit: 1000000,
   segParallel: 8,
   wordTopN: 30,
+  enableWordCloud: true,
+  wordCloudTopN: 120,
+  wordCloudShape: 'circle',
   enableHistory: true,
   historyMonths: 1,
   historyDateLimit: 30,
@@ -24,6 +27,13 @@ const DEFAULT_CONFIG = {
   classifyTemp: 0.08,
   classifyMinBest: 0.2,
   classifyMinMargin: 0.06,
+  // calibration (prob/entropy + gating)
+  protoMode: 'max',
+  pMin: 0.22,
+  hMax: 0.78,
+  adaptiveByLength: true,
+  gateMode: 'mixed',
+  neutralGate: 0.22,
   useSummaryPrior: true,
   summaryPriorWeight: 0.15,
   useSubtitleContext: false,
@@ -49,6 +59,13 @@ async function load() {
     if (el.type === 'checkbox') el.checked = !!cfg[k];
     else el.value = cfg[k];
   }
+  // 兼容：select 的 value 需要确保存在
+  try {
+    const pm = document.getElementById('protoMode');
+    if (pm) pm.value = String(cfg.protoMode || 'max');
+    const gm = document.getElementById('gateMode');
+    if (gm) gm.value = String(cfg.gateMode || 'mixed');
+  } catch {}
   // 载入 Summary Prior 选项
   try {
     const cb = document.getElementById('useSummaryPrior');
@@ -98,6 +115,9 @@ async function save() {
     const tpmLimit = Math.max(1000, Number(document.getElementById('tpmLimit').value) || 1000000);
     const segParallel = Math.max(1, Number(document.getElementById('segParallel').value) || 8);
     const wordTopN = Math.max(10, Number(document.getElementById('wordTopN').value) || 30);
+    const enableWordCloud = !!document.getElementById('enableWordCloud')?.checked;
+    const wordCloudTopN = Math.max(10, Number(document.getElementById('wordCloudTopN')?.value) || 120);
+    const wordCloudShape = String(document.getElementById('wordCloudShape')?.value || 'circle');
     const enableHistory = document.getElementById('enableHistory').checked;
     const historyMonths = Math.max(1, Number(document.getElementById('historyMonths').value) || 1);
     const historyDateLimit = Math.max(1, Number(document.getElementById('historyDateLimit').value) || 30);
@@ -110,6 +130,12 @@ async function save() {
     const classifyTemp = Math.max(0.01, Math.min(1, Number(document.getElementById('classifyTemp').value) || 0.08));
     const classifyMinBest = Math.max(0, Math.min(1, Number(document.getElementById('classifyMinBest').value) || 0.2));
     const classifyMinMargin = Math.max(0, Math.min(1, Number(document.getElementById('classifyMinMargin').value) || 0.06));
+    const protoMode = String(document.getElementById('protoMode')?.value || 'max');
+    const pMin = Math.max(0, Math.min(1, Number(document.getElementById('pMin')?.value) || 0.22));
+    const hMax = Math.max(0, Math.min(1, Number(document.getElementById('hMax')?.value) || 0.78));
+    const adaptiveByLength = !!document.getElementById('adaptiveByLength')?.checked;
+    const gateMode = String(document.getElementById('gateMode')?.value || 'mixed');
+    const neutralGate = Math.max(0, Math.min(1, Number(document.getElementById('neutralGate')?.value) || 0.22));
     const useSummaryPrior = !!document.getElementById('useSummaryPrior')?.checked;
     const summaryPriorWeight = Math.max(0, Math.min(0.8, Number(document.getElementById('summaryPriorWeight')?.value) || 0.15));
     const useSubtitleContext = !!document.getElementById('useSubtitleContext')?.checked;
@@ -141,6 +167,9 @@ async function save() {
       tpmLimit,
       segParallel,
       wordTopN,
+      enableWordCloud,
+      wordCloudTopN,
+      wordCloudShape,
       enableHistory,
       historyMonths,
       historyDateLimit,
@@ -154,6 +183,12 @@ async function save() {
       classifyTemp,
       classifyMinBest,
       classifyMinMargin,
+      protoMode,
+      pMin,
+      hMax,
+      adaptiveByLength,
+      gateMode,
+      neutralGate,
       useSummaryPrior,
       summaryPriorWeight,
       useSubtitleContext,

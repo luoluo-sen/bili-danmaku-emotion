@@ -39,6 +39,7 @@
       ],
       "js": [
         "src/vendor/echarts.min.js",
+        "src/vendor/echarts-wordcloud.min.js",
         "src/utils.js",
         "src/exporter.js",
         "src/chart-manager.js",
